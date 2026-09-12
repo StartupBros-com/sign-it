@@ -4,7 +4,14 @@
   "private": true,
   "description": "Agent-native PDF signing: find the signature line, stamp a stored signature and date, preview, optionally seal.",
   "type": "module",
-  "bin": { "sign-it": "scripts/sign-it.mjs" },
-  "scripts": { "test": "bash tests/run.sh" },
-  "dependencies": { "pdf-lib": "^1.17.1" }
+  "bin": {
+    "sign-it": "scripts/sign-it.mjs"
+  },
+  "scripts": {
+    "test": "bash tests/run.sh"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "pdf-lib": "^1.17.1"
+  }
 }

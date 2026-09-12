@@ -12,6 +12,8 @@
 //   sign-it convert <in.docx> [--out FILE] [--force]  Word document -> PDF (LibreOffice headless, or on WSL
 //                                                     the Windows-side Word through powershell.exe)
 //   sign-it fields <in.pdf>                             list labeled blanks ("Printed Name: ____") and text fields
+//   sign-it finalize <in.docx> --remove "TEXT" ...      strip exactly the named text (a draft footer, a watermark)
+//                                                     from a Word file into <name>-final.docx; never picks markers itself
 //   sign-it fill   <in.pdf> --set "Label=Value" ... [--near TEXT] [--out FILE] [--preview] [--over-ink]
 //                                                     write values into labeled blanks; --near picks the column
 //                                                     under an anchor text when a label appears twice
@@ -84,7 +86,7 @@ function parseArgs(argv) {
     if (!onlyPos && a.startsWith('--')) {
       const k = a.slice(2); const n = argv[i + 1];
       if (n === undefined || (n.startsWith('--') && n !== '--')) flags[k] = true;
-      else if (k === 'set') { (flags.set = flags.set || []).push(n); i++; }
+      else if (k === 'set' || k === 'remove') { (flags[k] = flags[k] || []).push(n); i++; }
       else { flags[k] = n; i++; }
     } else pos.push(a);
   }
@@ -633,9 +635,10 @@ async function cmdFind(pos, flags) {
   const { doc, src, repaired } = await openPdf(pdfLib, pdf);
   const meta = pageMeta(doc);
   const acro = acroformSlots(doc, pdfLib);
-  const slots = findSlots(pdfWords(src, flags, meta.map(m => m.size)), acro, meta.map(m => m.rot));
+  const pages = pdfWords(src, flags, meta.map(m => m.size));
+  const slots = findSlots(pages, acro, meta.map(m => m.rot));
   if (!flags['no-ink']) for (const s of slots) s.ink = inkFraction(src, s, meta[s.page - 1].size.height);
-  out({ file: pdf, repaired, candidates: slots.map(candidateView), skipped: acro.skipped });
+  out({ file: pdf, repaired, draftMarkers: draftMarkers(pages), candidates: slots.map(candidateView), skipped: acro.skipped });
   if (!slots.length) process.exit(3);
 }
 
@@ -653,6 +656,9 @@ async function cmdSign(pos, flags) {
   const { doc, src, repaired } = await openPdf(pdfLib, pdf);
   const png = await doc.embedPng(fs.readFileSync(f().SIG)).catch(e => die(5, `stored signature is not a decodable PNG (${e.message}); re-run sign-it setup --from with a valid PNG`));
   const meta = pageMeta(doc);
+  const pagesAll = pdfWords(src, flags, meta.map(m => m.size));
+  const markers = draftMarkers(pagesAll);
+  draftGuard(markers, flags, 'sign');
   let slot, skipped = [];
   if (flags.page !== undefined || flags.x !== undefined || flags.y !== undefined) {
     if (!(flags.page !== undefined && flags.x !== undefined && flags.y !== undefined)) die(1, 'manual placement needs --page, --x and --y (points from the bottom-left as displayed, or percentages like 20%)');
@@ -679,7 +685,7 @@ async function cmdSign(pos, flags) {
     }
   } else {
     const acro = acroformSlots(doc, pdfLib); skipped = acro.skipped;
-    const found = findSlots(pdfWords(src, flags, meta.map(m => m.size)), acro, meta.map(m => m.rot));
+    const found = findSlots(pagesAll, acro, meta.map(m => m.rot));
     if (!flags['no-ink']) for (const c of found) c.ink = inkFraction(src, c, meta[c.page - 1].size.height);
     slot = pickSlot(found, flags, skipped);
   }
@@ -769,10 +775,44 @@ async function cmdSign(pos, flags) {
   }
   fs.writeFileSync(outPath, await doc.save());
   const result = { out: outPath, repaired, page: slot.page, source: slot.source, confidence: slot.confidence, label: slot.label, line: slot.line, x: +a.x.toFixed(1), y: +a.y.toFixed(1), width: +w.toFixed(1), height: +h.toFixed(1), rotation: rot, date: datePlaced, dateNote, skipped, sealed: false, preview: null };
+  if (markers.length) result.draftMarkers = markers; // signed with --draft-ok
   if (slot.source === 'ocr') result.ocrNote = 'placement comes from OCR of a scanned page and is approximate; check the preview before delivering';
   if (flags.preview) result.preview = preview(outPath, slot.page);
   if (flags.seal) result.sealed = seal(outPath, outPath.replace(/\.pdf$/i, '') + '-sealed.pdf', result);
   out(result);
+}
+
+
+// ---------- draft markers ----------
+// A document that says DRAFT, "Proposed Revision", "For Discussion", "Not
+// for signature" in a header, footer, watermark or short banner is not ready
+// to sign; a careful human stops there. Prose is not a marker ("null and
+// void" inside a sentence stays silent). sign and fill refuse unless
+// --draft-ok; the skill never passes that on its own.
+const DRAFT_RE = /\b(draft|proposed\s+revisions?|for\s+discussion(?:\s+(?:only|purposes))?|for\s+review(?:\s+only)?|redline|not\s+for\s+(?:signature|execution)|do\s+not\s+sign|sample|specimen|void|template|preliminary|working\s+copy|unsigned\s+copy)\b/i;
+function draftMarkers(pages) {
+  const found = []; const seen = new Set();
+  for (const page of pages) {
+    for (const line of groupLines(page)) {
+      const text = line.words.map(w => w.text).join(' ');
+      const tall = Math.max(...line.words.map(w => w.yMax - w.yMin));
+      const where = line.yMin < 60 ? 'header' : line.yMax > page.height - 60 ? 'footer' : tall >= 28 ? 'watermark' : line.words.length <= 6 ? 'banner' : null;
+      if (!where) continue;
+      const m = text.match(DRAFT_RE); if (!m) continue;
+      // the phrase is the marker's own segment of the line (between separators, before a trailing "Page N"):
+      // exactly what finalize --remove needs, so nobody has to guess the words
+      const seg = text.split(/\s*[\u00b7\u2022|\u2014\u2013]\s*/).find(s => DRAFT_RE.test(s)) || text;
+      const phrase = seg.replace(/\s*\bpage\s*\d*\s*$/i, '').replace(/^[\s\-:]+|[\s\-:]+$/g, '').trim();
+      const key = `${page.num}|${where}|${phrase.toLowerCase()}`; if (seen.has(key)) continue; seen.add(key);
+      found.push({ page: page.num, where, marker: m[0], phrase, text: text.slice(0, 120) });
+    }
+  }
+  return found;
+}
+function draftGuard(markers, flags, verb) {
+  if (!markers.length || flags['draft-ok']) return;
+  const phrases = [...new Set(markers.map(d => d.phrase))];
+  die(3, `this document is marked as a draft; not ${verb}ing it:\n` + markers.map(d => `  p${d.page} ${d.where}: "${d.text}"`).join('\n') + `\nAsk the operator whether the text is final. If it is and the Word file is at hand: finalize <docx> ` + phrases.map(p => `--remove "${p}"`).join(' ') + ` then convert and ${verb} the -final copy. --draft-ok ${verb}s this file as is.`);
 }
 
 // ---------- fields / fill: labeled blanks ----------
@@ -856,9 +896,10 @@ async function cmdFields(pos, flags) {
   const pdfLib = await loadPdfLib();
   const { doc, src, repaired } = await openPdf(pdfLib, pdf);
   const meta = pageMeta(doc);
-  const slots = [...textFieldSlots(doc, pdfLib, meta), ...fieldSlots(pdfWords(src, flags, meta.map(m => m.size)), meta.map(m => m.rot))];
+  const pages = pdfWords(src, flags, meta.map(m => m.size));
+  const slots = [...textFieldSlots(doc, pdfLib, meta), ...fieldSlots(pages, meta.map(m => m.rot))];
   if (!flags['no-ink']) for (const s of slots) s.ink = inkFraction(src, s, meta[s.page - 1].size.height);
-  out({ file: pdf, repaired, fields: slots.map(fieldView) });
+  out({ file: pdf, repaired, draftMarkers: draftMarkers(pages), fields: slots.map(fieldView) });
   if (!slots.length) process.exit(3);
 }
 
@@ -878,6 +919,7 @@ async function cmdFill(pos, flags) {
   const { doc, src, repaired } = await openPdf(pdfLib, pdf);
   const meta = pageMeta(doc);
   const pages = pdfWords(src, flags, meta.map(m => m.size));
+  draftGuard(draftMarkers(pages), flags, 'fill');
   const slots = [...textFieldSlots(doc, pdfLib, meta), ...fieldSlots(pages, meta.map(m => m.rot))];
   if (!slots.length) die(3, 'no labeled blank ("Printed Name: ____") and no text field found; render the page and check the layout');
   const near = flags.near !== undefined ? String(flags.near) : null;
@@ -927,6 +969,66 @@ async function cmdFill(pos, flags) {
   const result = { out: outPath, repaired, filled };
   if (flags.preview) result.preview = preview(outPath, filled[0].page);
   out(result);
+}
+
+
+// ---------- finalize: remove named text from a Word document ----------
+// A .docx is a zip of XML parts. Exactly the text the operator names is
+// removed from paragraphs in the body, headers, footers and notes (runs are
+// joined per paragraph, so text split across runs is found) and from VML
+// watermark text paths; nothing is written if any named text is absent.
+// The command never decides which markers to remove.
+function xmlDecode(s) { return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n)).replace(/&amp;/g, '&'); }
+function xmlEncode(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function tidySeparators(s) {
+  return s.replace(/\s*[·•|]\s*[·•|]\s*/g, ' · ').replace(/^\s*[·•|]\s*/, '').replace(/\s*[·•|]\s*$/, '').replace(/ {2,}/g, ' ');
+}
+function removeFromPart(xml, texts, counts, where) {
+  let out = xml.replace(/<w:p\b[\s\S]*?<\/w:p>/g, (para) => {
+    const nodes = [...para.matchAll(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g)];
+    if (!nodes.length) return para;
+    let joined = nodes.map(n => xmlDecode(n[2])).join('');
+    let changed = false;
+    for (const t of texts) { let i; while ((i = joined.indexOf(t)) >= 0) { joined = joined.slice(0, i) + joined.slice(i + t.length); counts.get(t).n++; counts.get(t).where.add(where); changed = true; } }
+    if (!changed) return para;
+    joined = tidySeparators(joined);
+    let k = 0;
+    return para.replace(/<w:t(\s[^>]*)?>([\s\S]*?)<\/w:t>/g, (m, attrs) => { const v = k++ === 0 ? joined : ''; return `<w:t xml:space="preserve">${xmlEncode(v)}</w:t>`; });
+  });
+  out = out.replace(/(<v:textpath\b[^>]*\bstring=")([^"]*)(")/g, (m, a, v, b) => {
+    let s = xmlDecode(v); let changed = false;
+    for (const t of texts) { let i; while ((i = s.indexOf(t)) >= 0) { s = s.slice(0, i) + s.slice(i + t.length); counts.get(t).n++; counts.get(t).where.add('watermark'); changed = true; } }
+    return changed ? a + xmlEncode(s.trim()) + b : m;
+  });
+  return out;
+}
+async function cmdFinalize(pos, flags) {
+  const src = pos[0];
+  if (!src) die(1, 'usage: sign-it finalize <file.docx> --remove "TEXT" [--remove ...] [--out FILE]');
+  if (!fs.existsSync(src)) die(5, `no such file: ${src}`);
+  if (!/\.docx$/i.test(src)) die(1, 'finalize takes a .docx (a .doc is a binary format; save it as .docx in Word first)');
+  const texts = [].concat(flags.remove || []).map(String).map(t => t.trim()).filter(Boolean);
+  if (!texts.length) die(1, 'nothing to remove: pass --remove "TEXT" with the exact text to strip (finalize never picks markers on its own)');
+  if (flags.out === true) die(1, '--out needs a file name');
+  const outPath = flags.out ? String(flags.out) : src.replace(/\.docx$/i, '') + '-final.docx';
+  if (sameFile(src, outPath)) die(1, 'refusing to overwrite the input; pass a different --out');
+  if (fs.existsSync(outPath)) die(5, `refusing to overwrite ${outPath}; pass a different --out`);
+  const fflate = await import('fflate').catch(() => die(4, `fflate is not installed. Run: pnpm install --dir "${SKILL_DIR}"`));
+  const entries = fflate.unzipSync(new Uint8Array(fs.readFileSync(src)));
+  const counts = new Map(texts.map(t => [t, { n: 0, where: new Set() }]));
+  const parts = Object.keys(entries).filter(n => /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/.test(n));
+  if (!parts.length) die(5, 'not a Word document: no word/document.xml inside');
+  const rebuilt = {};
+  for (const name of Object.keys(entries)) {
+    if (!parts.includes(name)) { rebuilt[name] = entries[name]; continue; }
+    const where = /header/.test(name) ? 'header' : /footer/.test(name) ? 'footer' : /notes/.test(name) ? 'notes' : 'body';
+    const xml = fflate.strFromU8(entries[name]);
+    rebuilt[name] = fflate.strToU8(removeFromPart(xml, texts, counts, where));
+  }
+  const missing = texts.filter(t => counts.get(t).n === 0);
+  if (missing.length) die(3, 'nothing was written; not found in the document: ' + missing.map(t => `"${t}"`).join(', ') + '\n(the text must match exactly, including punctuation; headers, footers, body, tables and watermarks are searched)');
+  fs.writeFileSync(outPath, fflate.zipSync(rebuilt, { level: 6 }));
+  out({ file: src, out: outPath, removed: texts.map(t => ({ text: t, occurrences: counts.get(t).n, where: [...counts.get(t).where].sort() })), note: 'convert the finalized file and check its render before signing' });
 }
 
 function preview(pdf, pageNum) {
@@ -1045,7 +1147,8 @@ try {
     case 'convert': await cmdConvert(pos, flags); break;
     case 'fields': await cmdFields(pos, flags); break;
     case 'fill': await cmdFill(pos, flags); break;
-    default: die(1, 'usage: sign-it <find|sign|fill|fields|seal|setup|seal-setup|doctor|convert> ... (see the header of scripts/sign-it.mjs)');
+    case 'finalize': await cmdFinalize(pos, flags); break;
+    default: die(1, 'usage: sign-it <find|sign|fill|fields|finalize|seal|setup|seal-setup|doctor|convert> ... (see the header of scripts/sign-it.mjs)');
   }
 } catch (e) {
   if (e instanceof Exit) { process.stderr.write(`sign-it: ${e.message}\n`); process.exit(e.code); }

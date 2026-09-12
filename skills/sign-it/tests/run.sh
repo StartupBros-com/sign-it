@@ -13,7 +13,7 @@ ok()   { pass=$((pass+1)); echo "PASS $1"; }
 bad()  { fail=$((fail+1)); echo "FAIL $1"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 ruled twocolumn acro-text glued heading footers captions inked columns datafields datafields2 undercap wrapped thinink datebelow acro-prefilled acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
+for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 ruled draft twocolumn acro-text glued heading footers captions inked columns datafields datafields2 undercap wrapped thinink datebelow acro-prefilled acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
   node "$HERE/make-fixture.mjs" "$k" "$T/$k.pdf" >/dev/null || { echo "fixture build failed (is pdf-lib installed? pnpm install --dir $SKILL)"; exit 1; }
 done
 cp "$T/agreement.pdf" "$T/agreement.orig.pdf"
@@ -413,6 +413,36 @@ $CLI fill "$T/acro-text.pdf" --set "Title=Founder" --out "$T/acro-filled2.pdf" >
 check "fill: a pre-filled AcroForm field is refused, not overwritten" "[ $rc -eq 3 ] && grep -q 'already holds \"CEO\"' $T/acro-fill2.err && [ ! -e $T/acro-filled2.pdf ]"
 $CLI fill "$T/letter.docx" --set "Title=x" >/dev/null 2>"$T/fill-docx.err"; rc=$?
 check "fill on a .docx is exit 1 pointing at convert" "[ $rc -eq 1 ] && grep -q 'sign-it convert' $T/fill-docx.err"
+
+
+# draft markers: footer banner and watermark are reported; prose is not; sign/fill refuse unless --draft-ok
+$CLI find "$T/draft.pdf" >"$T/draft-find.json"; rc=$?
+check "draft: footer banner and DRAFT watermark are reported as markers" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/draft-find.json'));w=sorted(m['where'] for m in d['draftMarkers']);assert w==['footer','watermark'], d['draftMarkers']\""
+check "draft: each marker carries the exact phrase finalize needs" "python3 -c \"import json;d=json.load(open('$T/draft-find.json'));p=sorted(m['phrase'] for m in d['draftMarkers']);assert p==['DRAFT','Proposed Revision for Discussion'], p\""
+check "draft: 'null and void ... template' prose is not a marker" "python3 -c \"import json;d=json.load(open('$T/draft-find.json'));assert not any('void' in m['text'].lower() for m in d['draftMarkers']), d['draftMarkers']\""
+$CLI sign "$T/draft.pdf" --find "Party A" --out "$T/draft-signed.pdf" >/dev/null 2>"$T/draft-sign.err"; rc=$?
+check "draft: sign refuses (exit 3) naming the footer and --draft-ok, writes nothing" "[ $rc -eq 3 ] && grep -q 'Proposed Revision' $T/draft-sign.err && grep -q -- '--draft-ok' $T/draft-sign.err && [ ! -e $T/draft-signed.pdf ]"
+check "draft: the refusal names finalize with the phrase" "grep -q 'finalize <docx>' $T/draft-sign.err && grep -q -- '--remove \"Proposed Revision for Discussion\"' $T/draft-sign.err && grep -q -- '--remove \"DRAFT\"' $T/draft-sign.err"
+$CLI sign "$T/draft.pdf" --find "Party A" --draft-ok --out "$T/draft-signed.pdf" >"$T/draft-sign.json"; rc=$?
+check "draft: --draft-ok signs and the result records the markers" "[ $rc -eq 0 ] && grep -q '\"draftMarkers\"' $T/draft-sign.json"
+$CLI fill "$T/draft.pdf" --set "Party A=Someone" --out "$T/draft-filled.pdf" >/dev/null 2>"$T/draft-fill.err"; rc=$?
+check "draft: fill refuses too (exit 3)" "[ $rc -eq 3 ] && grep -q 'marked as a draft' $T/draft-fill.err && [ ! -e $T/draft-filled.pdf ]"
+check "agreement fixture has no draft markers" "python3 -c \"import json;d=json.load(open('$T/acro.json'));assert d['draftMarkers']==[], d\""
+
+# finalize: exact text removal from a Word file's footer, header watermark; body untouched; all or nothing
+node "$HERE/make-docx.mjs" "$T/proposal.docx" >/dev/null
+$CLI finalize "$T/proposal.docx" --remove "Proposed Revision for Discussion" --remove "DRAFT" >"$T/finalize.json"; rc=$?
+check "finalize: writes <name>-final.docx and reports occurrences per text" "[ $rc -eq 0 ] && [ -s $T/proposal-final.docx ] && python3 -c \"import json;d=json.load(open('$T/finalize.json'));r={x['text']:x for x in d['removed']};assert r['Proposed Revision for Discussion']['occurrences']==1 and r['Proposed Revision for Discussion']['where']==['footer'] and r['DRAFT']['where']==['watermark'], d\""
+check "finalize: footer text split across runs is removed and separators tidied" "[ \"\$(node $HERE/docx-text.mjs $T/proposal-final.docx word/footer1.xml)\" = 'Confidential · Page 1' ]"
+check "finalize: the watermark text path is emptied, the header text stays" "node $HERE/docx-text.mjs $T/proposal-final.docx word/header1.xml | grep -q 'Tasty LLC' && ! node $HERE/docx-text.mjs $T/proposal-final.docx word/header1.xml | grep -q 'DRAFT'"
+check "finalize: body and table are untouched" "node $HERE/docx-text.mjs $T/proposal-final.docx word/document.xml | grep -q 'Collaboration AgreementThis Agreement may be signed in counterparts.Signature: ______________Signature: ______________'"
+$CLI finalize "$T/proposal.docx" --remove "Proposed Revision for Discussion" --remove "Nowhere Text" --out "$T/proposal-none.docx" >/dev/null 2>"$T/finalize-none.err"; rc=$?
+check "finalize: a text that is absent is exit 3 and nothing is written (all or nothing)" "[ $rc -eq 3 ] && grep -q 'Nowhere Text' $T/finalize-none.err && [ ! -e $T/proposal-none.docx ]"
+$CLI finalize "$T/proposal.docx" --out "$T/x.docx" >/dev/null 2>"$T/finalize-noargs.err"; rc=$?
+check "finalize: without --remove it does nothing and says it never picks markers" "[ $rc -eq 1 ] && grep -q 'never picks' $T/finalize-noargs.err"
+printf 'x' >"$T/legacy.doc"
+$CLI finalize "$T/legacy.doc" --remove "DRAFT" >/dev/null 2>"$T/finalize-doc.err"; rc=$?
+check "finalize: a .doc is refused with the save-as hint (exit 1)" "[ $rc -eq 1 ] && grep -q 'save it as .docx' $T/finalize-doc.err"
 
 echo "---- $pass passed, $fail failed  (scratch: $T)"
 [ "$fail" -eq 0 ]
