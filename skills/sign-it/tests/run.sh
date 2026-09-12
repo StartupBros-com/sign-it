@@ -13,7 +13,7 @@ ok()   { pass=$((pass+1)); echo "PASS $1"; }
 bad()  { fail=$((fail+1)); echo "FAIL $1"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
+for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 ruled glued heading footers captions inked columns datafields datafields2 undercap wrapped thinink datebelow acro-prefilled acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
   node "$HERE/make-fixture.mjs" "$k" "$T/$k.pdf" >/dev/null || { echo "fixture build failed (is pdf-lib installed? pnpm install --dir $SKILL)"; exit 1; }
 done
 cp "$T/agreement.pdf" "$T/agreement.orig.pdf"
@@ -57,9 +57,25 @@ check "find pairs a next-line date slot" "python3 -c \"import json;d=json.load(o
 $CLI find "$T/sameline.pdf" >"$T/sameline.json"
 check "same-line Signature+Date yields one signature slot with a date" "python3 -c \"import json;d=json.load(open('$T/sameline.json'));assert len(d['candidates'])==1 and d['candidates'][0]['date'] is not None\""
 
+# drawn rule (no underscores): a short label with a wide gap is a low-confidence candidate
+$CLI find "$T/ruled.pdf" >"$T/ruled-find.json"; rc=$?
+check "ruled row yields a text-label candidate with a date" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/ruled-find.json'));c=[x for x in d['candidates'] if 'Officer' in x['label']][0];assert c['source']=='text-label' and c['confidence']==0.5 and c['date'] is not None, c\""
+$CLI sign "$T/ruled.pdf" --out "$T/ruled-auto.pdf" >/dev/null 2>"$T/ruled-auto.err"; rc=$?
+check "low-confidence lone candidate is not auto-picked (exit 3)" "[ $rc -eq 3 ] && [ ! -e $T/ruled-auto.pdf ] && grep -q 'low-confidence' $T/ruled-auto.err"
+$CLI sign "$T/ruled.pdf" --find "Officer" --out "$T/ruled-signed.pdf" >"$T/ruled-sign.json"; rc=$?
+check "ruled row signs with --find and a date" "[ $rc -eq 0 ] && grep -q '\"date\": \"' $T/ruled-sign.json"
+check "stamp height stays below the text line above (room-capped)" "python3 -c \"import json;d=json.load(open('$T/ruled-sign.json'));assert d['height']<=26, d\""
+check "slot steps past the short tail hanging over its left end instead of shrinking under it" "python3 -c \"import json;d=json.load(open('$T/ruled-sign.json'));assert d['x']>106 and d['height']>14, d\""
+check "a pre-filled Title field with a drawn rule is not a candidate" "python3 -c \"import json;d=json.load(open('$T/ruled-find.json'));assert not any('PRESIDENT' in x['label'] for x in d['candidates']), d\""
+check "apostrophe in the label is decoded (pdftotext emits &apos;)" "python3 -c \"import json;d=json.load(open('$T/ruled-find.json'));assert any(x['label']==\\\"Officer's signature\\\" for x in d['candidates']), d\""
+check "prose line above the rule is not a candidate" "python3 -c \"import json;d=json.load(open('$T/ruled-find.json'));assert not any('enter my PIN' in x['label'] for x in d['candidates'])\""
+$CLI sign "$T/agreement.pdf" --find "Party B" --height 12 --out "$T/short.pdf" >"$T/short.json"; rc=$?
+check "--height caps the stamp" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/short.json'));assert d['height']<=12, d\""
+
 # AcroForm: a /Sig widget is a confidence-1.0 candidate paired with the Date text field
 $CLI find "$T/acroform.pdf" >"$T/acro.json"; rc=$?
 check "acroform find (exit 0)" "[ $rc -eq 0 ]"
+check "printed caption beside a real signature field is not a second candidate" "python3 -c \"import json;d=json.load(open('$T/acro.json'));assert [x['source'] for x in d['candidates']]==['acroform'], d\""
 check "acroform /Sig widget listed" "python3 -c \"import json;d=json.load(open('$T/acro.json'));c=d['candidates'];assert len(c)==1 and c[0]['source']=='acroform' and c[0]['label']=='AcroForm: Signature1' and c[0]['confidence']==1.0\""
 check "acroform date text field paired" "python3 -c \"import json;d=json.load(open('$T/acro.json'));assert d['candidates'][0]['date']['source']=='acroform'\""
 $CLI sign "$T/acroform.pdf" --out "$T/acroform-out.pdf" >"$T/acro-sign.json"; rc=$?
@@ -158,8 +174,10 @@ check "--pick resolves ambiguity" "[ $rc -eq 0 ] && [ -s $T/pick2.pdf ]"
 # manual placement, bounds, and bad numbers
 $CLI sign "$T/agreement.pdf" --page 1 --x 20% --y 12% --width 25% --out "$T/manual.pdf" >/dev/null; rc=$?
 check "manual placement (exit 0)" "[ $rc -eq 0 ] && [ -s $T/manual.pdf ]"
-$CLI sign "$T/agreement.pdf" --page 2 --x 20% --y 80% --width 25% --date-x 47% --date-y 80% --out "$T/manual-date.pdf" >"$T/manual-date.json"; rc=$?
+$CLI sign "$T/agreement.pdf" --page 2 --x 20% --y 75% --width 25% --date-x 47% --date-y 75% --out "$T/manual-date.pdf" >"$T/manual-date.json"; rc=$?
 check "manual placement with a manual date slot" "[ $rc -eq 0 ] && grep -q '\"date\": \"' $T/manual-date.json"
+$CLI sign "$T/agreement.pdf" --page 2 --x 20% --y 80% --width 25% --out "$T/manual-over-text.pdf" >/dev/null 2>"$T/manual-over-text.err"; rc=$?
+check "manual placement over printed text is refused as inked (exit 3)" "[ $rc -eq 3 ] && grep -q 'already carries ink' $T/manual-over-text.err && [ ! -e $T/manual-over-text.pdf ]"
 $CLI sign "$T/agreement.pdf" --page 1 --x 150% --y 12% --out "$T/offpage.pdf" >/dev/null 2>"$T/offpage.err"; rc=$?
 check "off-page placement refused (exit 1)" "[ $rc -eq 1 ] && [ ! -e $T/offpage.pdf ] && grep -q 'off the page' $T/offpage.err"
 $CLI sign "$T/agreement.pdf" --page 99 --x 10 --y 10 --out "$T/badpage.pdf" >/dev/null 2>&1; rc=$?
@@ -233,6 +251,139 @@ if command -v uv >/dev/null && command -v openssl >/dev/null && [ "${SIGN_IT_TES
   fi
 else
   echo "SKIP seal (set SIGN_IT_TEST_SEAL=1 with uv+openssl to exercise it)"
+fi
+
+
+# glued underscores: "signature_____" is one word; the blank is split off and the row is a 0.9 text slot
+$CLI find "$T/glued.pdf" >"$T/glued-find.json"; rc=$?
+check "glued underscores yield a 0.9 text slot with a date" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/glued-find.json'));c=d['candidates'];assert len(c)==1 and c[0]['source']=='text' and c[0]['confidence']==0.9 and c[0]['date'] is not None and 'signature' in c[0]['label'], c\""
+$CLI sign "$T/glued.pdf" --out "$T/glued-signed.pdf" >"$T/glued-sign.json"; rc=$?
+check "glued row signs without a hint (single 0.9 candidate)" "[ $rc -eq 0 ] && grep -q '\"date\": \"' $T/glued-sign.json"
+
+# a centered "Signatures" heading over a slash table is not a candidate
+$CLI find "$T/heading.pdf" >"$T/heading-find.json" 2>/dev/null; rc=$?
+check "centered Signatures heading is not a candidate (exit 3, empty list)" "[ $rc -eq 3 ] && python3 -c \"import json;d=json.load(open('$T/heading-find.json'));assert d['candidates']==[], d\""
+
+# convert: Word documents
+printf 'not really a docx' >"$T/letter.docx"
+SIGN_IT_SOFFICE=/nonexistent/soffice SIGN_IT_POWERSHELL=/nonexistent/powershell.exe $CLI convert "$T/letter.docx" >/dev/null 2>"$T/conv0.err"; rc=$?
+check "convert with no converter is exit 4 naming LibreOffice" "[ $rc -eq 4 ] && grep -q 'LibreOffice' $T/conv0.err && [ ! -e $T/letter.pdf ]"
+$CLI find "$T/letter.docx" >/dev/null 2>"$T/conv1.err"; rc=$?
+check "find on a .docx is exit 1 pointing at convert" "[ $rc -eq 1 ] && grep -q 'sign-it convert' $T/conv1.err"
+$CLI sign "$T/letter.docx" --find x --out "$T/nope.pdf" >/dev/null 2>"$T/conv2.err"; rc=$?
+check "sign on a .docx is exit 1 pointing at convert" "[ $rc -eq 1 ] && grep -q 'sign-it convert' $T/conv2.err && [ ! -e $T/nope.pdf ]"
+cat >"$T/soffice-stub" <<'STUB'
+#!/usr/bin/env bash
+# fake LibreOffice: --headless --convert-to pdf --outdir DIR SRC
+outdir=""; src=""
+while [ $# -gt 0 ]; do case "$1" in --outdir) outdir="$2"; shift 2;; --headless|--convert-to) shift; [ "$1" = pdf ] && shift;; *) src="$1"; shift;; esac; done
+stem="$(basename "$src")"; stem="${stem%.*}"
+cp "$SIGN_IT_STUB_PDF" "$outdir/$stem.pdf"
+STUB
+chmod +x "$T/soffice-stub"
+SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_SOFFICE="$T/soffice-stub" $CLI convert "$T/letter.docx" >"$T/conv3.json"; rc=$?
+check "convert via LibreOffice writes <stem>.pdf beside the source" "[ $rc -eq 0 ] && grep -q '\"via\": \"libreoffice\"' $T/conv3.json && [ -s $T/letter.pdf ]"
+SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_SOFFICE="$T/soffice-stub" $CLI convert "$T/letter.docx" >/dev/null 2>"$T/conv4.err"; rc=$?
+check "convert refuses to overwrite an existing PDF (exit 5)" "[ $rc -eq 5 ] && grep -q 'refusing to overwrite' $T/conv4.err"
+cat >"$T/powershell-stub" <<'STUB'
+#!/usr/bin/env bash
+# fake powershell.exe: answers $env:TEMP, or copies a PDF to the -Out path
+case "$*" in *'$env:TEMP'*) echo "$SIGN_IT_STUB_TEMP"; exit 0;; esac
+out=""; while [ $# -gt 0 ]; do [ "$1" = -Out ] && out="$2"; shift; done
+cp "$SIGN_IT_STUB_PDF" "$out"; echo "ok $out"
+STUB
+chmod +x "$T/powershell-stub"; mkdir -p "$T/wintemp"
+SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_STUB_TEMP="$T/wintemp" SIGN_IT_SOFFICE=/nonexistent/soffice SIGN_IT_POWERSHELL="$T/powershell-stub" $CLI convert "$T/letter.docx" --out "$T/letter-word.pdf" >"$T/conv5.json"; rc=$?
+check "convert via Word COM (WSL) writes --out and cleans the exchange dir" "[ $rc -eq 0 ] && grep -q '\"via\": \"word-com\"' $T/conv5.json && [ -s $T/letter-word.pdf ] && [ -z \"\$(ls -A $T/wintemp/sign-it-convert)\" ]"
+$CLI find "$T/letter-word.pdf" >/dev/null; rc=$?
+check "the converted PDF is findable" "[ $rc -eq 0 ]"
+
+
+# owner-password PDFs (empty user password): opened through a qpdf-decrypted scratch copy
+if command -v qpdf >/dev/null 2>&1; then
+  qpdf --encrypt --user-password= --owner-password=owner-only --bits=256 -- "$T/agreement.pdf" "$T/owner-locked.pdf"
+  $CLI find "$T/owner-locked.pdf" >"$T/locked-find.json"; rc=$?
+  check "owner-password PDF is found through qpdf (repaired: decrypted)" "[ $rc -eq 0 ] && grep -q '\"repaired\": \"decrypted\"' $T/locked-find.json && grep -q 'Party A' $T/locked-find.json"
+  $CLI sign "$T/owner-locked.pdf" --find "Party A" --out "$T/locked-signed.pdf" >"$T/locked-sign.json"; rc=$?
+  check "owner-password PDF signs" "[ $rc -eq 0 ] && grep -q '\"repaired\": \"decrypted\"' $T/locked-sign.json"
+  check "signed output of an owner-password PDF carries no encryption" "qpdf --show-encryption $T/locked-signed.pdf 2>&1 | grep -q 'not encrypted'"
+  check "decrypted scratch copies are removed at exit" "[ -z \"\$(ls -d /tmp/sign-it-open-* 2>/dev/null)\" ]"
+  qpdf --encrypt --user-password=secret --owner-password=owner-only --bits=256 -- "$T/agreement.pdf" "$T/user-locked.pdf"
+  $CLI find "$T/user-locked.pdf" >/dev/null 2>"$T/user-locked.err"; rc=$?
+  check "PDF that needs a password to open is exit 5 and says so" "[ $rc -eq 5 ] && grep -q 'needs a password' $T/user-locked.err"
+else
+  echo "SKIP qpdf not installed: owner-password checks"
+fi
+
+
+# label precision: "<verb> by" footers and truncated prose are not candidates; real labels still are
+$CLI find "$T/footers.pdf" >"$T/footers-find.json"; rc=$?
+check "footers: only Approved by, Sign here (signature) and Date signed (date) survive" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/footers-find.json'));ls=sorted(c['label'] for c in d['candidates']);assert ls==['Approved by:','Sign here'], ls\""
+check "footers: no footer, prose fragment or block header is a candidate" "python3 -c \"import json;d=json.load(open('$T/footers-find.json'));bad=[c['label'] for c in d['candidates'] if c['label'] in ('Report generated by','Powered by TCPDF','Processed by eBay','Sign your','by number','Sign up','Provided by:','USPS signature tracking #','ACCEPTED:','You/the Owner:')];assert not bad, bad\""
+
+
+# captions below drawn rules (SBA/IRS layout): the band above the caption is the slot
+$CLI find "$T/captions.pdf" >"$T/captions-find.json"; rc=$?
+check "caption-below: the Authorized Representative caption yields a text-caption slot with a date" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/captions-find.json'));c=[x for x in d['candidates'] if 'Authorized' in x['label']];assert len(c)==1 and c[0]['source']=='text-caption' and c[0]['date'] is not None, d\""
+check "caption-below: Print Name and Title captions are not candidates" "python3 -c \"import json;d=json.load(open('$T/captions-find.json'));assert not any(('Name' in x['label'] or 'Title' in x['label']) for x in d['candidates']), d\""
+$CLI sign "$T/captions.pdf" --find "Authorized" --out "$T/captions-signed.pdf" >"$T/captions-sign.json"; rc=$?
+check "caption-below: the stamp lands above the caption and below the paragraph (y in 232..300)" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/captions-sign.json'));assert 226<=d['y']<=240 and d['y']+d['height']<=300, d\""
+check "caption-below: the date is stamped" "grep -q '\"date\": \"' $T/captions-sign.json"
+
+# ink: a line that already carries a scrawl is reported and refused
+$CLI find "$T/inked.pdf" >"$T/inked-find.json"; rc=$?
+check "ink: the scrawled line reports ink above the limit, the clean line below it" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/inked-find.json'));c={x['label']:x for x in d['candidates']};assert c['Client Signature:']['ink']>0.025 and c['Consultant Signature:']['ink']<=0.025, c\""
+$CLI sign "$T/inked.pdf" --find "Client" --out "$T/inked-no.pdf" >/dev/null 2>"$T/inked-no.err"; rc=$?
+check "ink: signing the scrawled line is refused (exit 3) naming --over-ink" "[ $rc -eq 3 ] && grep -q 'already carries ink' $T/inked-no.err && grep -q 'over-ink' $T/inked-no.err && [ ! -e $T/inked-no.pdf ]"
+$CLI sign "$T/inked.pdf" --find "Client" --over-ink --out "$T/inked-forced.pdf" >/dev/null; rc=$?
+check "ink: --over-ink forces it" "[ $rc -eq 0 ] && [ -s $T/inked-forced.pdf ]"
+$CLI sign "$T/inked.pdf" --find "Consultant" --out "$T/inked-ok.pdf" >/dev/null; rc=$?
+check "ink: the clean line signs normally" "[ $rc -eq 0 ]"
+$CLI sign "$T/inked.pdf" --find "Client" --no-ink --out "$T/inked-noink.pdf" >/dev/null; rc=$?
+check "ink: --no-ink skips the check" "[ $rc -eq 0 ]"
+
+# two side-by-side blocks: the Date under the left block pairs with the left signature only
+$CLI find "$T/columns.pdf" >"$T/columns-find.json"; rc=$?
+check "columns: left signature gets the date, right signature does not" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/columns-find.json'));c=sorted(d['candidates'],key=lambda x:x['x']);assert len(c)==2 and c[0]['date'] is not None and c[1]['date'] is None, c\""
+
+# data fields: only the signature line of a form is a candidate
+$CLI find "$T/datafields.pdf" >"$T/datafields-find.json"; rc=$?
+check "datafields: only Cardholder Signature is a candidate, with its date" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/datafields-find.json'));c=d['candidates'];assert [x['label'] for x in c]==['Cardholder Signature:'] and c[0]['date'] is not None, c\""
+$CLI sign "$T/datafields.pdf" --out "$T/datafields-signed.pdf" >/dev/null; rc=$?
+check "datafields: signs without a hint" "[ $rc -eq 0 ]"
+
+
+# data-field labels that contain role words are not signature lines
+$CLI find "$T/datafields2.pdf" >"$T/datafields2-find.json"; rc=$?
+check "datafields2: only Authorized Representative is a candidate, with its date" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/datafields2-find.json'));c=d['candidates'];assert [x['label'] for x in c]==['Authorized Representative:'] and c[0]['date'] is not None, c\""
+
+# a bare underscore rule with captions beneath: the rule's own geometry is the slot
+$CLI find "$T/undercap.pdf" >"$T/undercap-find.json"; rc=$?
+check "undercap: the caption claims the underscore rule above it (source text, 0.8, y on the rule, date paired)" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/undercap-find.json'));c=d['candidates'];assert len(c)==1 and c[0]['source']=='text' and c[0]['confidence']==0.8 and c[0]['y']>=596 and c[0]['date'] is not None and c[0]['date']['y']>=596, c\""
+
+# a signature caption that ends in a non-label word, three captions under one drawn rule
+$CLI find "$T/wrapped.pdf" >"$T/wrapped-find.json"; rc=$?
+check "wrapped: 'Employee Signature for all applying' is a text-caption candidate with the Date beside it" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/wrapped-find.json'));c=[x for x in d['candidates'] if 'Employee' in x['label']];assert len(c)==1 and c[0]['source']=='text-caption', d\""
+check "wrapped: the Spouse Signature caption is a separate candidate" "python3 -c \"import json;d=json.load(open('$T/wrapped-find.json'));assert any('Spouse' in x['label'] for x in d['candidates']), d\""
+
+# thin cursive strokes still count as ink
+$CLI find "$T/thinink.pdf" >"$T/thinink-find.json"; rc=$?
+check "thin ink: hairline strokes over the line are flagged" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/thinink-find.json'));c=d['candidates'][0];assert c['ink']>0.025, c\""
+
+# a Date two rows below the signature, past a Printed Name row, still pairs
+$CLI find "$T/datebelow.pdf" >"$T/datebelow-find.json"; rc=$?
+check "datebelow: the Date under the Printed Name row pairs with the signature" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/datebelow-find.json'));c=d['candidates'];assert len(c)==1 and c[0]['date'] is not None, c\""
+
+# a pre-filled AcroForm Date field is left alone
+$CLI sign "$T/acro-prefilled.pdf" --out "$T/acro-prefilled-signed.pdf" >"$T/acro-prefilled.json"; rc=$?
+check "acro-prefilled: signs, leaves the existing date, says so in dateNote" "[ $rc -eq 0 ] && grep -q 'already holds' $T/acro-prefilled.json && [ \"\$(node $HERE/read-field.mjs $T/acro-prefilled-signed.pdf Date1)\" = '12/4/18' ]"
+
+# --ocr forces OCR on a page that has a text layer
+if command -v tesseract >/dev/null 2>&1; then
+  $CLI find "$T/agreement.pdf" --ocr >"$T/forced-ocr.json"; rc=$?
+  check "--ocr: candidates come from the OCR source even though the page has text" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/forced-ocr.json'));assert d['candidates'] and all(x['source']=='ocr' for x in d['candidates']), d\""
+else
+  echo "SKIP tesseract not installed: --ocr check"
 fi
 
 echo "---- $pass passed, $fail failed  (scratch: $T)"
