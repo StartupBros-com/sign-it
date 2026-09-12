@@ -105,6 +105,94 @@ if (kind === 'agreement') {
   const form = doc.getForm();
   form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
   const date = form.createTextField('Date1'); date.setMaxLength(10); date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 });
+} else if (kind === 'glued') {
+  // Word-style row: the underscores are glued to the label, so pdftotext
+  // emits "signature_____" and "Date_____" as single words.
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Cardholder signature_____________________________   Date______________', 72, 640);
+} else if (kind === 'heading') {
+  // A centered "Signatures" heading over a slash-separated table: nothing here
+  // is a signature line the tool can place on its own.
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Signatures', 276, 640, 12, bold);
+  line(p2, 'From the side of Company', 90, 600); line(p2, '/', 300, 600); line(p2, '/', 420, 600);
+  line(p2, 'From the side of Client', 90, 560); line(p2, '/', 300, 560); line(p2, '/', 420, 560);
+} else if (kind === 'captions') {
+  // SBA-style block: drawn rules with the captions BELOW them.
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'I certify that the information provided is true and correct.', 72, 300, 10);
+  p2.drawLine({ start: { x: 72, y: 230 }, end: { x: 330, y: 230 }, thickness: 0.6 });
+  line(p2, 'Signature of Authorized Representative of Borrower', 72, 218, 8);
+  p2.drawLine({ start: { x: 360, y: 230 }, end: { x: 460, y: 230 }, thickness: 0.6 });
+  line(p2, 'Date', 360, 218, 8);
+  p2.drawLine({ start: { x: 72, y: 180 }, end: { x: 330, y: 180 }, thickness: 0.6 });
+  line(p2, 'Print Name', 72, 168, 8);
+  p2.drawLine({ start: { x: 360, y: 180 }, end: { x: 460, y: 180 }, thickness: 0.6 });
+  line(p2, 'Title', 360, 168, 8);
+} else if (kind === 'inked') {
+  // one blank already carries a scrawl, one is clean
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Client Signature: ______________________   Date: __________', 72, 640);
+  for (let i = 0; i < 40; i++) p2.drawLine({ start: { x: 175 + i * 4, y: 644 + (i % 3) * 6 }, end: { x: 179 + i * 4, y: 650 - (i % 2) * 8 }, thickness: 1.2 });
+  line(p2, 'Consultant Signature: ______________________   Date: __________', 72, 560);
+} else if (kind === 'columns') {
+  // two blocks side by side; only the left one has a Date line beneath it
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Signature: ______________', 72, 640); line(p2, 'Signature: ______________', 340, 640);
+  line(p2, 'Date: __________', 72, 622);
+} else if (kind === 'datafields') {
+  // a form whose only signature line sits among data fields
+  const p2 = doc.addPage([612, 792]);
+  ['Cardholder Name: ____________________', 'Credit Card Number: ____________________', 'Expiration Date: ________', 'Amount to be Paid: ____________',
+   'Cardholder Signature: ____________________   Date: __________'].forEach((t, i) => line(p2, t, 72, 680 - i * 28));
+} else if (kind === 'datafields2') {
+  // role words inside data-field labels, a long print-name label, and one real line
+  const p2 = doc.addPage([612, 792]);
+  ['Lender PPP Loan Number: ______________', 'Client Name (if different from Cardholder): ______________', 'Account Number: ______________', 'Title: ______________',
+   'Authorized Representative: ______________   Date: __________'].forEach((t, i) => line(p2, t, 72, 680 - i * 28));
+} else if (kind === 'undercap') {
+  // Word export: a bare underscore rule on one line, captions on the next
+  const p2 = doc.addPage([612, 792]);
+  line(p2, '______________________________          ______________', 72, 600);
+  line(p2, 'Company Official Signature', 72, 586, 9); line(p2, 'Date', 300, 586, 9);
+} else if (kind === 'wrapped') {
+  // insurer enrollment: three captions under one drawn rule, the signature caption ends in a non-label word
+  const p2 = doc.addPage([612, 792]);
+  p2.drawLine({ start: { x: 40, y: 520 }, end: { x: 580, y: 520 }, thickness: 0.6 });
+  line(p2, 'Date', 40, 508, 8); line(p2, 'Employee Signature for all applying', 140, 508, 8); line(p2, 'Spouse Signature (if applying for coverage)', 380, 508, 8);
+} else if (kind === 'thinink') {
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Client Signature: ______________________   Date: __________', 72, 640);
+  for (let i = 0; i < 60; i++) p2.drawLine({ start: { x: 178 + i * 2.2, y: 645 + (i % 4) * 4 }, end: { x: 180 + i * 2.2, y: 651 - (i % 3) * 5 }, thickness: 0.5 });
+} else if (kind === 'datebelow') {
+  // Printed Name row between the signature and its Date, same column
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Signature: ______________________', 72, 640);
+  line(p2, 'Printed Name: ______________________', 72, 618);
+  line(p2, 'Date: __________', 72, 596);
+} else if (kind === 'acro-prefilled') {
+  const p2 = doc.addPage([612, 792]);
+  const form = doc.getForm();
+  form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
+  const date = form.createTextField('Date1'); date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 }); date.setText('12/4/18');
+} else if (kind === 'footers') {
+  // Rows that fire the label rule in the wild but are not signature lines
+  // (sweep of 1,676 PDFs, 2026-09-12), plus three real labels among them.
+  const p2 = doc.addPage([612, 792]);
+  const rows = ['Report generated by', 'Powered by TCPDF', 'Processed by eBay', 'Sign your', 'by number', 'Sign up', 'Provided by:', 'USPS signature tracking #',
+    'Approved by:', 'Sign here', 'Date signed', 'ACCEPTED:', 'You/the Owner:'];
+  rows.forEach((t, i) => line(p2, t, 72, 700 - i * 30, 10));
+} else if (kind === 'ruled') {
+  // IRS-style row: label at left, a DRAWN rule (no underscores), Date with
+  // its own rule, Title pre-filled, and a text line 26pt above the rule.
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'As an officer of the corporation, I will enter my PIN as my signature.', 79, 640, 10);
+  line(p2, 'return.', 79, 624, 10); // wrapped tail hanging just over the rule's left end
+  p2.drawLine({ start: { x: 100, y: 612 }, end: { x: 295, y: 612 }, thickness: 0.6 });
+  line(p2, "Officer's signature", 36, 605, 7);
+  p2.drawLine({ start: { x: 330, y: 612 }, end: { x: 395, y: 612 }, thickness: 0.6 });
+  line(p2, 'Date', 309, 605, 7);
+  line(p2, 'Title', 410, 605, 7); line(p2, 'PRESIDENT', 435, 607, 9);
 } else if (kind === 'acroform') {
   const p2 = doc.addPage([612, 792]);
   line(p2, 'Signature', 72, 655, 10); line(p2, 'Date', 330, 655, 10);
