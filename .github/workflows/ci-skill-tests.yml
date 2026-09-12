@@ -1,0 +1,45 @@
+name: Skill tests
+
+# sign-it ships a real test suite (skills/sign-it/tests/run.sh): synthetic
+# PDFs built with pdf-lib, planted negatives, AcroForm, rotated and scanned
+# (OCR) fixtures. Run it on every PR and on main so a regression fails here,
+# not after a release is public.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          persist-credentials: false
+
+      - name: Install poppler, tesseract, qpdf
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends poppler-utils tesseract-ocr qpdf
+
+      - name: Install the skill's one dependency
+        working-directory: skills/sign-it
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+
+      - name: Run the suite
+        working-directory: skills/sign-it
+        run: bash tests/run.sh
+
+      - name: No host-specific references
+        run: |
+          if grep -rnE '/home/[a-z]+|dotfiles|wt-new|open-deliverable' skills/sign-it --exclude-dir=node_modules --exclude=pnpm-lock.yaml; then
+            echo "::error::host-specific reference found in the vendored skill"; exit 1
+          fi
