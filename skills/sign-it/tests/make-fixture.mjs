@@ -195,6 +195,13 @@ if (kind === 'agreement') {
   const form = doc.getForm();
   const nm = form.createTextField('Printed Name'); nm.addToPage(p2, { x: 72, y: 600, width: 200, height: 20 });
   const ti = form.createTextField('Title'); ti.addToPage(p2, { x: 72, y: 570, width: 200, height: 20 }); ti.setText('CEO');
+} else if (kind === 'draft') {
+  // a proposal: footer banner, big DRAFT watermark, and prose that mentions void/template without being a marker
+  const p2 = doc.addPage([612, 792]);
+  line(p2, 'Party A: ______________________   Date: __________', 72, 640);
+  line(p2, 'This agreement is null and void if the attached template is not initialed by both parties.', 72, 600, 10);
+  line(p2, 'DRAFT', 200, 400, 48, bold);
+  line(p2, 'Confidential \u00b7 Proposed Revision for Discussion     Page 2', 72, 30, 8);
 } else if (kind === 'ruled') {
   // IRS-style row: label at left, a DRAWN rule (no underscores), Date with
   // its own rule, Title pre-filled, and a text line 26pt above the rule.
