@@ -40,7 +40,10 @@ node scripts/sign-it.mjs sign contract.pdf --find "Client" --preview
 node scripts/sign-it.mjs sign contract.pdf --page 3 --x 20% --y 12% --width 25% --date-x 50% --date-y 12%   # manual
 node scripts/sign-it.mjs sign contract.pdf --find "By" --seal    # plus PAdES seal
 node scripts/sign-it.mjs convert offer.docx && node scripts/sign-it.mjs sign offer.pdf --find "Employee"   # Word documents
+node scripts/sign-it.mjs fill offer-signed.pdf --set "Printed Name=Your Name" --set "Title=Founder" --near "YOUR COMPANY"   # the rest of the block
 ```
+
+`fields <pdf>` lists every labeled blank and text field; `fill` writes values into them (`--near` picks the column under a party header when a label appears twice), refuses blanks that already carry ink, and writes nothing if any label is unmatched.
 
 Commands print their JSON result on stdout; `doctor`, `setup`, `find` with no candidates, and a failed `seal` do so even on a non-zero exit. Hard failures of `sign` and usage errors print nothing on stdout and a `sign-it: <message>` block on stderr, which lists the candidate lines when the slot is ambiguous. Exit codes: 0 ok, 1 usage, 2 no signature configured, 3 no or ambiguous slot, 4 missing dependency, 5 PDF or file error. Without `--find` or `--pick` it signs only when there is exactly one candidate. OCR placements carry an `ocrNote` in the result: check the preview.
 

@@ -13,7 +13,7 @@ ok()   { pass=$((pass+1)); echo "PASS $1"; }
 bad()  { fail=$((fail+1)); echo "FAIL $1"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 ruled glued heading footers captions inked columns datafields datafields2 undercap wrapped thinink datebelow acro-prefilled acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
+for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 ruled twocolumn acro-text glued heading footers captions inked columns datafields datafields2 undercap wrapped thinink datebelow acro-prefilled acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
   node "$HERE/make-fixture.mjs" "$k" "$T/$k.pdf" >/dev/null || { echo "fixture build failed (is pdf-lib installed? pnpm install --dir $SKILL)"; exit 1; }
 done
 cp "$T/agreement.pdf" "$T/agreement.orig.pdf"
@@ -385,6 +385,34 @@ if command -v tesseract >/dev/null 2>&1; then
 else
   echo "SKIP tesseract not installed: --ocr check"
 fi
+
+
+# fields / fill: labeled blanks in a two-party block
+$CLI fields "$T/twocolumn.pdf" >"$T/fields.json"; rc=$?
+check "fields: lists the ten labeled blanks of the two-party block" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/fields.json'));f=d['fields'];assert len(f)==10 and sorted(set(x['label'] for x in f))==['Date:','Email:','Printed Name:','Signature:','Title:'], f\""
+$CLI fill "$T/twocolumn.pdf" --set "Printed Name=Will Mitchell" --out "$T/fill-ambig.pdf" >/dev/null 2>"$T/fill-ambig.err"; rc=$?
+check "fill: a label present in both columns is ambiguous without --near (exit 3, nothing written)" "[ $rc -eq 3 ] && grep -q 'appears 2 times' $T/fill-ambig.err && grep -q -- '--near' $T/fill-ambig.err && [ ! -e $T/fill-ambig.pdf ]"
+$CLI fill "$T/twocolumn.pdf" --set "Printed Name=Will Mitchell" --set "Title=Managing Member" --set "email=will@example.com" --near "STARTUPBROS" --out "$T/filled.pdf" >"$T/fill.json"; rc=$?
+check "fill: --near picks the right column for all three labels" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/fill.json'));f=d['filled'];assert len(f)==3 and all(x['x']>330 for x in f), f\""
+check "fill: the values are in the output's text layer, once each" "[ \"\$(pdftotext $T/filled.pdf - | grep -c 'Will Mitchell')\" = 1 ] && [ \"\$(pdftotext $T/filled.pdf - | grep -c 'Managing Member')\" = 1 ] && pdftotext $T/filled.pdf - | grep -q 'will@example.com'"
+check "fill: the running header naming both parties does not steer --near (all three land under the table header)" "python3 -c \"import json;d=json.load(open('$T/fill.json'));assert [x['x']>330 for x in d['filled']]==[True,True,True], d\""
+$CLI fill "$T/twocolumn.pdf" --set "Title=x" --near "SIGNATURES" --out "$T/fill-vague.pdf" >/dev/null 2>"$T/fill-vague.err"; rc=$?
+check "fill: an anchor that sits between the columns is refused as not separating them" "[ $rc -eq 3 ] && grep -q 'does not separate' $T/fill-vague.err && [ ! -e $T/fill-vague.pdf ]"
+check "fill: the left column is untouched" "python3 -c \"import json;d=json.load(open('$T/fill.json'));assert all(x['x']>330 for x in d['filled'])\" && [ \"\$(pdftotext -layout $T/filled.pdf - | grep -c 'Printed Name: ____')\" -ge 1 ]"
+$CLI fill "$T/filled.pdf" --set "Printed Name=Someone Else" --near "STARTUPBROS" --out "$T/fill-twice.pdf" >/dev/null 2>"$T/fill-twice.err"; rc=$?
+check "fill: a blank that already carries text is refused (exit 3)" "[ $rc -eq 3 ] && grep -q 'already carries ink' $T/fill-twice.err && [ ! -e $T/fill-twice.pdf ]"
+$CLI fill "$T/twocolumn.pdf" --set "Fax=555" --near "STARTUPBROS" --out "$T/fill-none.pdf" >/dev/null 2>"$T/fill-none.err"; rc=$?
+check "fill: an unmatched label is exit 3 listing the labels on offer, nothing written" "[ $rc -eq 3 ] && grep -q 'matches no blank' $T/fill-none.err && grep -q 'Printed Name:' $T/fill-none.err && [ ! -e $T/fill-none.pdf ]"
+$CLI fill "$T/twocolumn.pdf" --set "Title=Managing Member" --set "Fax=555" --near "STARTUPBROS" --out "$T/fill-partial.pdf" >/dev/null 2>&1; rc=$?
+check "fill: one bad label among good ones writes nothing (all or nothing)" "[ $rc -eq 3 ] && [ ! -e $T/fill-partial.pdf ]"
+$CLI sign "$T/filled.pdf" --find "Signature" --pick 2 --out "$T/filled-signed.pdf" >/dev/null 2>&1; rc=$?
+check "fill then sign chains (exit 0)" "[ $rc -eq 0 ] && [ -s $T/filled-signed.pdf ]"
+$CLI fill "$T/acro-text.pdf" --set "Printed Name=Will Mitchell" --out "$T/acro-filled.pdf" >"$T/acro-fill.json"; rc=$?
+check "fill: an AcroForm text field is filled by name" "[ $rc -eq 0 ] && grep -q '\"source\": \"acroform\"' $T/acro-fill.json && [ \"\$(node $HERE/read-field.mjs $T/acro-filled.pdf 'Printed Name')\" = 'Will Mitchell' ]"
+$CLI fill "$T/acro-text.pdf" --set "Title=Founder" --out "$T/acro-filled2.pdf" >/dev/null 2>"$T/acro-fill2.err"; rc=$?
+check "fill: a pre-filled AcroForm field is refused, not overwritten" "[ $rc -eq 3 ] && grep -q 'already holds \"CEO\"' $T/acro-fill2.err && [ ! -e $T/acro-filled2.pdf ]"
+$CLI fill "$T/letter.docx" --set "Title=x" >/dev/null 2>"$T/fill-docx.err"; rc=$?
+check "fill on a .docx is exit 1 pointing at convert" "[ $rc -eq 1 ] && grep -q 'sign-it convert' $T/fill-docx.err"
 
 echo "---- $pass passed, $fail failed  (scratch: $T)"
 [ "$fail" -eq 0 ]

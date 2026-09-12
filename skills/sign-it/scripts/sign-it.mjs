@@ -11,6 +11,10 @@
 //   sign-it doctor
 //   sign-it convert <in.docx> [--out FILE] [--force]  Word document -> PDF (LibreOffice headless, or on WSL
 //                                                     the Windows-side Word through powershell.exe)
+//   sign-it fields <in.pdf>                             list labeled blanks ("Printed Name: ____") and text fields
+//   sign-it fill   <in.pdf> --set "Label=Value" ... [--near TEXT] [--out FILE] [--preview] [--over-ink]
+//                                                     write values into labeled blanks; --near picks the column
+//                                                     under an anchor text when a label appears twice
 //
 // Slot sources, in confidence order: AcroForm signature fields (/Sig widgets,
 // 1.0; already-signed and hidden ones are reported as skipped), text-layer
@@ -79,7 +83,9 @@ function parseArgs(argv) {
     if (!onlyPos && a === '--') { onlyPos = true; continue; }
     if (!onlyPos && a.startsWith('--')) {
       const k = a.slice(2); const n = argv[i + 1];
-      if (n === undefined || (n.startsWith('--') && n !== '--')) flags[k] = true; else { flags[k] = n; i++; }
+      if (n === undefined || (n.startsWith('--') && n !== '--')) flags[k] = true;
+      else if (k === 'set') { (flags.set = flags.set || []).push(n); i++; }
+      else { flags[k] = n; i++; }
     } else pos.push(a);
   }
   return { pos, flags };
@@ -769,6 +775,160 @@ async function cmdSign(pos, flags) {
   out(result);
 }
 
+// ---------- fields / fill: labeled blanks ----------
+// Every "Label: ______" row in the text layer (and every AcroForm text
+// field) is a fillable slot. Labels match case-insensitively without the
+// colon; a label that appears more than once (two-party blocks) is chosen
+// with --near TEXT, the column under that anchor. Nothing is guessed: an
+// unmatched or ambiguous label is exit 3 and no file is written.
+function normLabel(s) { return String(s).replace(/[:\uff1a]\s*$/, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase(); }
+function fieldSlots(pages, rots) {
+  const slots = [];
+  for (const page of pages) {
+    const ocr = page.source === 'ocr'; const blankRe = ocr ? BLANK_OCR_RE : BLANK_RE;
+    const rot = rots ? (rots[page.num - 1] || 0) : 0;
+    for (const line of groupLines(page)) {
+      let prev = -1;
+      line.words.forEach((w, wi) => {
+        if (!blankRe.test(w.text)) return;
+        const between = line.words.slice(prev + 1, wi); prev = wi;
+        if (!between.length) return;
+        let words = between.map(x => x.text);
+        const ci = words.map(t => /:$/.test(t)).lastIndexOf(true);
+        if (ci >= 0) words = words.slice(0, ci + 1);
+        words = words.slice(-5);
+        const label = words.join(' ');
+        if (!/[A-Za-z]/.test(label)) return;
+        slots.push({ page: page.num, pageWidth: page.width, pageHeight: page.height, rot, label, norm: normLabel(label), line: line.words.map(x => x.text).join(' '),
+          x: w.xMin, y: page.height - line.yMax, width: w.xMax - w.xMin, lineHeight: line.yMax - line.yMin, yMinTop: line.yMin, source: ocr ? 'ocr' : 'text', roomAbove: (line.yMax - line.yMin) + 4 });
+      });
+    }
+  }
+  return slots;
+}
+// AcroForm text fields, by name, with their first widget's display box.
+function textFieldSlots(doc, pdfLib, meta) {
+  const out = [];
+  let form; try { form = doc.getForm(); } catch { return out; }
+  const { PDFName } = pdfLib;
+  for (const field of form.getFields()) {
+    if (!(field instanceof pdfLib.PDFTextField)) continue;
+    const widgets = field.acroField.getWidgets(); if (!widgets.length) continue;
+    const wd = widgets[0]; const rect = wd.getRectangle();
+    const pages = doc.getPages(); let pageIndex = pages.findIndex(p => { const annots = p.node.Annots(); return annots && annots.asArray().some(r => doc.context.lookup(r) === wd.dict); });
+    if (pageIndex < 0) pageIndex = 0;
+    const pg = pages[pageIndex]; const { width: pw, height: ph } = pg.getSize(); const rot = pageRotation(pg);
+    const dbox = contentToDisplay(rot, pw, ph, { x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+    out.push({ page: pageIndex + 1, pageWidth: meta[pageIndex].size.width, pageHeight: meta[pageIndex].size.height, rot, label: field.getName(), norm: normLabel(field.getName()), line: `AcroForm text field ${field.getName()}`,
+      x: dbox.x, y: dbox.y, width: dbox.width, lineHeight: dbox.height, boxHeight: dbox.height, yMinTop: meta[pageIndex].size.height - (dbox.y + dbox.height), source: 'acroform', fieldName: field.getName(), readOnly: field.isReadOnly(), existing: (field.getText() || '').trim() });
+  }
+  return out;
+}
+function fieldView(s) {
+  return { page: s.page, source: s.source, label: s.label, line: s.line, x: +s.x.toFixed(1), y: +s.y.toFixed(1), width: +s.width.toFixed(1), rotation: s.rot | 0,
+    ink: s.ink === undefined ? null : s.ink, existing: s.existing || undefined, note: inked(s) || s.existing ? 'already filled' : undefined };
+}
+// Every occurrence of the anchor text on a page (a party name usually
+// appears in the running header too); the caller uses the nearest one ABOVE
+// the blank, which is the table header, not the page header.
+function anchorCenters(pages, pageNum, text) {
+  const page = pages[pageNum - 1]; if (!page) return [];
+  const q = text.toLowerCase(); const found = [];
+  for (const line of groupLines(page)) {
+    const words = line.words; const joined = words.map(w => w.text).join(' ').toLowerCase();
+    const at = joined.indexOf(q); if (at < 0) continue;
+    let pos = 0; const hit = [];
+    for (const w of words) { const s = pos, e = pos + w.text.length; if (e > at && s < at + q.length) hit.push(w); pos = e + 1; }
+    if (hit.length) found.push({ x: (hit[0].xMin + hit[hit.length - 1].xMax) / 2, yTop: line.yMin });
+  }
+  return found;
+}
+// Horizontal distance from a blank to the nearest anchor printed above it.
+function anchorDistance(pages, s, text) {
+  const above = anchorCenters(pages, s.page, text).filter(a => a.yTop < s.yMinTop).sort((a, b) => (s.yMinTop - a.yTop) - (s.yMinTop - b.yTop));
+  return above.length ? Math.abs(above[0].x - (s.x + s.width / 2)) : Infinity;
+}
+
+async function cmdFields(pos, flags) {
+  wordDocGuard(pos[0]);
+  const pdf = pos[0]; if (!pdf) die(1, 'usage: sign-it fields <in.pdf> [--no-ocr|--ocr]');
+  if (!fs.existsSync(pdf)) die(5, `no such file: ${pdf}`);
+  const pdfLib = await loadPdfLib();
+  const { doc, src, repaired } = await openPdf(pdfLib, pdf);
+  const meta = pageMeta(doc);
+  const slots = [...textFieldSlots(doc, pdfLib, meta), ...fieldSlots(pdfWords(src, flags, meta.map(m => m.size)), meta.map(m => m.rot))];
+  if (!flags['no-ink']) for (const s of slots) s.ink = inkFraction(src, s, meta[s.page - 1].size.height);
+  out({ file: pdf, repaired, fields: slots.map(fieldView) });
+  if (!slots.length) process.exit(3);
+}
+
+async function cmdFill(pos, flags) {
+  wordDocGuard(pos[0]);
+  const pdf = pos[0]; if (!pdf) die(1, 'usage: sign-it fill <in.pdf> --set "Label=Value" [--set ...] [--near TEXT] [--out FILE] [--preview] [--over-ink]');
+  if (!fs.existsSync(pdf)) die(5, `no such file: ${pdf}`);
+  const sets = (flags.set || []).map(s => { const i = String(s).indexOf('='); if (i <= 0) die(1, `--set wants Label=Value (got "${s}")`); return { label: String(s).slice(0, i).trim(), value: String(s).slice(i + 1).trim() }; });
+  if (!sets.length) die(1, 'nothing to fill: pass --set "Label=Value" at least once');
+  if (flags.out === true) die(1, '--out needs a file name');
+  const outPath = flags.out ? String(flags.out) : path.join(path.dirname(pdf), path.basename(pdf).replace(/\.pdf$/i, '') + '-filled.pdf');
+  if (!fs.existsSync(path.dirname(outPath))) die(5, `output directory does not exist: ${path.dirname(outPath)}`);
+  if (sameFile(pdf, outPath)) die(1, 'refusing to overwrite the input; pass a different --out');
+  if (fs.existsSync(outPath)) die(5, `refusing to overwrite ${outPath}; pass a different --out`);
+  const pdfLib = await loadPdfLib();
+  const { StandardFonts, rgb, degrees } = pdfLib;
+  const { doc, src, repaired } = await openPdf(pdfLib, pdf);
+  const meta = pageMeta(doc);
+  const pages = pdfWords(src, flags, meta.map(m => m.size));
+  const slots = [...textFieldSlots(doc, pdfLib, meta), ...fieldSlots(pages, meta.map(m => m.rot))];
+  if (!slots.length) die(3, 'no labeled blank ("Printed Name: ____") and no text field found; render the page and check the layout');
+  const near = flags.near !== undefined ? String(flags.near) : null;
+  const describeF = (list) => list.map(s => `  p${s.page} x=${s.x.toFixed(0)} y=${s.yMinTop.toFixed(0)}pt ${s.source}  "${s.line.slice(0, 70)}"${inked(s) || s.existing ? '  (already filled)' : ''}`).join('\n');
+  const plan = []; const problems = [];
+  for (const { label, value } of sets) {
+    const n = normLabel(label);
+    let hits = slots.filter(s => s.norm === n);
+    if (!hits.length) hits = slots.filter(s => s.norm.includes(n));
+    if (!hits.length) { problems.push(`"${label}" matches no blank; labels on offer: ${[...new Set(slots.map(s => s.label))].slice(0, 20).join(' | ')}`); continue; }
+    if (hits.length > 1 && near) {
+      const scored = hits.map(s => ({ s, d: anchorDistance(pages, s, near) })).sort((p, q) => p.d - q.d);
+      if (!Number.isFinite(scored[0].d)) { problems.push(`--near "${near}" was not found above any "${label}" blank`); continue; }
+      // the winner must be clearly under the anchor; two blanks equally far from it stay ambiguous
+      if (scored.length > 1 && Number.isFinite(scored[1].d) && scored[1].d - scored[0].d < 40) { problems.push(`--near "${near}" does not separate the ${hits.length} "${label}" blanks (${scored.map(x => Math.round(x.d) + 'pt').join(' vs ')} from it); use a header printed directly above the column`); continue; }
+      hits = [scored[0].s];
+    }
+    if (hits.length > 1) { problems.push(`"${label}" appears ${hits.length} times; pick the column with --near TEXT (a header printed above it):\n` + describeF(hits)); continue; }
+    const s = hits[0];
+    if (s.readOnly) { problems.push(`"${label}" is a read-only form field`); continue; }
+    if (s.existing) { problems.push(`"${label}" already holds "${s.existing}"`); continue; }
+    if (!flags['no-ink'] && !flags['over-ink']) { s.ink = inkFraction(src, s, meta[s.page - 1].size.height); if (inked(s)) { problems.push(`"${label}" already carries ink (${Math.round(s.ink * 100)}% of the blank is dark); --over-ink forces it after a render check`); continue; } }
+    plan.push({ s, label, value });
+  }
+  if (problems.length) die(3, 'nothing was written:\n' + problems.map(p => '- ' + p).join('\n'));
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const filled = [];
+  for (const { s, label, value } of plan) {
+    if (s.source === 'acroform' && s.rot === 0) {
+      const tf = doc.getForm().getTextField(s.fieldName);
+      const maxLen = tf.getMaxLength(); if (maxLen !== undefined && value.length > maxLen) die(5, `field "${s.fieldName}" allows ${maxLen} characters; "${value}" does not fit`);
+      let size = Math.min(11, Math.max(7, s.boxHeight * 0.55)); while (size > 6 && font.widthOfTextAtSize(value, size) > s.width - 6) size -= 0.5;
+      tf.setFontSize(size); tf.setText(value); tf.updateAppearances(font);
+      filled.push({ label, value, page: s.page, source: s.source, field: s.fieldName, size });
+      continue;
+    }
+    const page = doc.getPage(s.page - 1); const { width: pw, height: ph } = page.getSize(); const rot = s.rot;
+    let size = Math.min(10, Math.max(7, s.lineHeight * 0.75)); const avail = s.width - 4;
+    while (size > 6 && font.widthOfTextAtSize(value, size) > avail) size -= 0.5;
+    if (font.widthOfTextAtSize(value, size) > avail) die(3, `"${value}" does not fit the ${s.width.toFixed(0)}pt blank for "${label}" even at 6pt; nothing was written`);
+    const box = { x: s.x, y: s.y, width: s.width, height: s.lineHeight || size + 4 };
+    const cb = displayToContent(rot, pw, ph, box); const t = anchorFor(rot, cb, font.widthOfTextAtSize(value, size), size, { x: 2, y: 2 });
+    page.drawText(value, { x: t.x, y: t.y, size, font, color: rgb(0.1, 0.1, 0.1), rotate: degrees(rot) });
+    filled.push({ label, value, page: s.page, source: s.source, x: +s.x.toFixed(1), y: +s.y.toFixed(1), size });
+  }
+  fs.writeFileSync(outPath, await doc.save());
+  const result = { out: outPath, repaired, filled };
+  if (flags.preview) result.preview = preview(outPath, filled[0].page);
+  out(result);
+}
+
 function preview(pdf, pageNum) {
   if (!have('pdftoppm')) return null;
   const base = pdf.replace(/\.pdf$/i, '') + '-preview';
@@ -883,7 +1043,9 @@ try {
     case 'seal-setup': cmdSealSetup(); break;
     case 'doctor': await cmdDoctor(); break;
     case 'convert': await cmdConvert(pos, flags); break;
-    default: die(1, 'usage: sign-it <find|sign|seal|setup|seal-setup|doctor|convert> ... (see the header of scripts/sign-it.mjs)');
+    case 'fields': await cmdFields(pos, flags); break;
+    case 'fill': await cmdFill(pos, flags); break;
+    default: die(1, 'usage: sign-it <find|sign|fill|fields|seal|setup|seal-setup|doctor|convert> ... (see the header of scripts/sign-it.mjs)');
   }
 } catch (e) {
   if (e instanceof Exit) { process.stderr.write(`sign-it: ${e.message}\n`); process.exit(e.code); }
