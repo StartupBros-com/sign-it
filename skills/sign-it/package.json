@@ -1,0 +1,10 @@
+{
+  "name": "sign-it",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent-native PDF signing: find the signature line, stamp a stored signature and date, preview, optionally seal.",
+  "type": "module",
+  "bin": { "sign-it": "scripts/sign-it.mjs" },
+  "scripts": { "test": "bash tests/run.sh" },
+  "dependencies": { "pdf-lib": "^1.17.1" }
+}

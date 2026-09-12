@@ -1,0 +1,105 @@
+name: CI
+
+# A skill repo has no unit tests to run, but it does have a contract the
+# marketplace enforces at release time: VERSION, the plugin manifest, and the
+# release tag move in lockstep, and the announce train stays on the shared
+# OIDC workflow. Checking it here means a mistake fails on the PR that causes
+# it, not silently after a release is already public.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          persist-credentials: false
+
+      - name: VERSION and plugin manifest move in lockstep
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          manifest="$(jq -er '.version' .claude-plugin/plugin.json)"
+          printf 'VERSION=%s plugin.json=%s\n' "$version" "$manifest"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::VERSION '$version' is not semver"; exit 1 ;;
+          esac
+          [ "$version" = "$manifest" ] || {
+            echo "::error::VERSION $version != plugin.json $manifest — the announce train refuses to post on a mismatch"
+            exit 1
+          }
+
+      - name: Plugin manifest names this repo
+        run: |
+          name="$(jq -er '.name' .claude-plugin/plugin.json)"
+          [ "$name" = "${GITHUB_REPOSITORY#*/}" ] || {
+            echo "::error::plugin.json name '$name' does not match the repository"
+            exit 1
+          }
+          test -f "skills/$name/SKILL.md" || {
+            echo "::error::missing skills/$name/SKILL.md — the marketplace validator requires it"
+            exit 1
+          }
+
+      - name: Announce train stays on the shared OIDC workflow
+        run: |
+          wf=.github/workflows/release-train.yml
+          test -f "$wf" || { echo "::error::missing $wf"; exit 1; }
+          grep -Eq 'hov-tool-drop-announce\.yml@[0-9a-f]{40}' "$wf" || {
+            echo "::error::release train must call the shared announce workflow pinned to a full commit SHA"
+            exit 1
+          }
+          grep -Eq '^[[:space:]]*id-token:[[:space:]]*write[[:space:]]*$' "$wf" || {
+            echo "::error::release train needs id-token: write for OIDC"
+            exit 1
+          }
+          ! grep -Fq 'TOOL_RELEASE_ANNOUNCE_SECRET' "$wf" || {
+            echo "::error::static announce secret is forbidden; identity is OIDC"
+            exit 1
+          }
+
+      # A well-formed SHA is not a working one. This repo sat on c981b872 while
+      # the announce workflow moved to a version whose script mints its own OIDC
+      # token from ACTIONS_ID_TOKEN_REQUEST_* -- env the old workflow never
+      # exported -- so the next release would have failed at token minting with
+      # a green CI.
+      #
+      # Compare the pinned workflow's CONTENT against marketplace main, not
+      # commit identity: most marketplace commits do not touch this file, and a
+      # merge commit can carry content identical to its parent. Only a content
+      # difference can actually change release behaviour, so only that fails.
+      - name: Announce workflow pin is current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/release-train.yml
+          path=.github/workflows/hov-tool-drop-announce.yml
+          pinned="$(grep -oE 'hov-tool-drop-announce\.yml@[0-9a-f]{40}' "$wf" | head -1 | cut -d@ -f2)"
+          [ -n "$pinned" ] || { echo "::error::no pinned announce workflow SHA found"; exit 1; }
+
+          fetch() {
+            gh api "repos/StartupBros-com/hov-marketplace/contents/${path}?ref=$1" \
+              --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1
+          }
+          pinned_hash="$(fetch "$pinned")" || true
+          main_hash="$(fetch main)" || true
+          if [ -z "$pinned_hash" ] || [ -z "$main_hash" ]; then
+            echo "::notice::could not read the announce workflow from the marketplace; skipping drift check"
+            exit 0
+          fi
+          if [ "$pinned_hash" = "$main_hash" ]; then
+            printf 'pin %s carries the current announce workflow\n' "${pinned:0:8}"
+            exit 0
+          fi
+          echo "::error::release-train pins hov-tool-drop-announce.yml@${pinned}, whose content differs from marketplace main. Repin to the current SHA -- a stale pin fails at release time, not here."
+          exit 1

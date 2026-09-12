@@ -1,0 +1,20 @@
+{
+  "name": "sign-it",
+  "version": "0.1.0-rc1",
+  "description": "Agent-native PDF signing: say \"sign that\" and get <file>-signed.pdf back. Finds the signature line (form field, text layer, or OCR), stamps your stored signature and the date, previews, fails closed on ambiguity, optional PAdES seal.",
+  "author": {
+    "name": "StartupBros / House of Vibe",
+    "url": "https://houseofvibe.ai"
+  },
+  "homepage": "https://houseofvibe.ai",
+  "repository": "https://github.com/StartupBros-com/sign-it",
+  "license": "MIT",
+  "keywords": [
+    "house-of-vibe",
+    "skills",
+    "pdf",
+    "signature",
+    "e-signature",
+    "claude-code"
+  ]
+}
