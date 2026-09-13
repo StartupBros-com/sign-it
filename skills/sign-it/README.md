@@ -13,11 +13,16 @@ Three sources, in confidence order, all local: a real AcroForm signature field i
 - As a Claude Code skill: put this directory at `~/.claude/skills/sign-it/` (or install the plugin), then `pnpm install --dir ~/.claude/skills/sign-it` (or `npm install --prefix ~/.claude/skills/sign-it`). Needs Node 18+ and `pdftotext` plus `pdftoppm` from poppler-utils (`apt install poppler-utils`, `brew install poppler`).
 - Optional: `tesseract-ocr` (scanned PDFs; set `SIGN_IT_TESSERACT` to point at a specific binary), `uv` + `openssl` (for the seal), and for Word documents either LibreOffice or, on WSL, Word installed on the Windows side (`convert` drives it through `powershell.exe`). `qpdf` opens owner-password PDFs (government fill-ins that are encrypted with an empty user password) and repairs damaged ones; without it those files are refused.
 
+## First run
+
+You don't run any of the commands below by hand inside Claude Code. Say "sign that" or type `/sign-it` with nothing set up yet, and the agent walks you through it once: "Before I can sign for you, I need your signature one time. It stays on this computer, in a private folder that only your login can open, and I never draw a signature for you." You choose how to give it — draw it on this computer, hand over a photo you already have, or draw it on your phone — see it rendered on a sample line before it's ever used, and answer a few optional questions (title, company, email, how dates should look). You end with a receipt: "✅ sign-it is ready." Then whatever document you started with gets signed, no re-asking. The setup below is the same thing run by hand, from a terminal, without the agent.
+
 ## One-time setup
 
 ```
-node scripts/sign-it.mjs setup --draw          # opens setup/draw.html: draw, click Download
-node scripts/sign-it.mjs setup --from ~/Downloads/signature.png --name "Your Name"
+node scripts/sign-it.mjs setup --draw          # opens the drawing page; pressing Save stores the signature, nothing to download
+node scripts/sign-it.mjs setup --wait 20       # the agent polls this until the drawing arrives (or --draw --phone for a phone link)
+node scripts/sign-it.mjs setup --from ~/Downloads/signature.jpg --name "Your Name"   # or any picture: the background is cut away
 node scripts/sign-it.mjs doctor
 ```
 

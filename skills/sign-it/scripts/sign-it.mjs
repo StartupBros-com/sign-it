@@ -37,8 +37,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { PNG } from 'pngjs';
 
 const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_ROOT = path.join(os.homedir(), '.config');
@@ -50,7 +53,7 @@ function resolveHome() {
   return CANONICAL_HOME;
 }
 let HOME = resolveHome();
-const f = () => ({ SIG: path.join(HOME, 'signature.png'), CFG: path.join(HOME, 'config.json'), CERT: path.join(HOME, 'cert.p12'), CERT_PASS: path.join(HOME, 'cert.pass'), VENV_PYHANKO: path.join(HOME, '.venv', 'bin', 'pyhanko') });
+const f = () => ({ SIG: path.join(HOME, 'signature.png'), SIG_PREV: path.join(HOME, 'signature.prev.png'), CFG: path.join(HOME, 'config.json'), CERT: path.join(HOME, 'cert.p12'), CERT_PASS: path.join(HOME, 'cert.pass'), VENV_PYHANKO: path.join(HOME, '.venv', 'bin', 'pyhanko'), LISTENER: path.join(HOME, 'listener.json'), SAMPLE_PREVIEW: path.join(HOME, 'sample-preview.png') });
 const PNG_MAGIC = '89504e470d0a1a0a';
 const OCR_DPI = 200;
 
@@ -77,6 +80,83 @@ function run(cmd, args, opts = {}) {
 function ensureHome() { fs.mkdirSync(HOME, { recursive: true, mode: 0o700 }); try { fs.chmodSync(HOME, 0o700); } catch {} }
 function readConfig() { try { return JSON.parse(fs.readFileSync(f().CFG, 'utf8')); } catch { return {}; } }
 function writeConfig(cfg) { ensureHome(); fs.writeFileSync(f().CFG, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 }); }
+function setOrClear(cfg, key, value) { if (value === '') delete cfg[key]; else cfg[key] = value; }
+
+// ---------- onboarding: listener state, opener, platform, phone address ----------
+function readListener() { try { return JSON.parse(fs.readFileSync(f().LISTENER, 'utf8')); } catch { return null; } }
+function writeListener(state) { ensureHome(); fs.writeFileSync(f().LISTENER, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 }); }
+function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
+function listenerLive(st) { return !!st && pidAlive(st.pid) && !st.saved && !st.expired && Number.isFinite(Date.parse(st.expiresAt)) && Date.now() < Date.parse(st.expiresAt); }
+// A one-time blocking sleep for a short-lived foreground CLI wait loop
+// (never used inside the long-running --listen server, which is event-driven).
+function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {} }
+function isWSL() {
+  if (process.env.WSL_DISTRO_NAME) return true;
+  try { return /microsoft/i.test(fs.readFileSync('/proc/version', 'utf8')); } catch { return false; }
+}
+function platformName() {
+  if (isWSL()) return 'wsl';
+  if (process.platform === 'darwin') return 'macos';
+  if (process.platform === 'win32') return 'windows';
+  return 'linux';
+}
+// The opener's exit status decides `opened`, never just whether a binary ran.
+function openUrl(url) {
+  let bin, args;
+  if (process.env.SIGN_IT_OPENER) { bin = have(process.env.SIGN_IT_OPENER); args = [url]; }
+  else if (isWSL()) { bin = powershellBin(); args = ['-NoProfile', '-Command', `Start-Process '${String(url).replace(/'/g, "''")}'`]; }
+  else if (process.platform === 'darwin') { bin = have('open'); args = [url]; }
+  else { bin = have('xdg-open'); args = [url]; }
+  if (!bin) return false;
+  const r = spawnSync(bin, args, { stdio: 'ignore' });
+  return !r.error && r.status === 0;
+}
+function isCGNAT100(addr) {
+  const p = addr.split('.').map(Number);
+  return p.length === 4 && p[0] === 100 && p[1] >= 64 && p[1] <= 127 && p.every(Number.isFinite);
+}
+// LAN address a phone on the same Wi-Fi can reach. On WSL only a tailscale0
+// (100.64/10) address counts: the WSL2 internal LAN address is unreachable
+// from outside the VM. Elsewhere, the first non-internal IPv4 whose
+// interface name is not a virtual/loopback/tunnel one, falling back to a
+// Tailscale address only when nothing else qualifies. SIGN_IT_PHONE_ADDR
+// overrides detection entirely; an empty string means "no address".
+function phoneAddress() {
+  if (process.env.SIGN_IT_PHONE_ADDR !== undefined) return process.env.SIGN_IT_PHONE_ADDR || null;
+  const nets = os.networkInterfaces();
+  if (isWSL()) {
+    for (const a of nets.tailscale0 || []) if (a.family === 'IPv4' && !a.internal && isCGNAT100(a.address)) return a.address;
+    return null;
+  }
+  const skipRe = /^(lo|docker|br-|veth|vEthernet|virbr|tun|utun|tailscale)/;
+  for (const [name, addrs] of Object.entries(nets)) {
+    if (skipRe.test(name)) continue;
+    for (const a of addrs || []) if (a.family === 'IPv4' && !a.internal) return a.address;
+  }
+  for (const [name, addrs] of Object.entries(nets)) {
+    if (!/^tailscale/.test(name)) continue;
+    for (const a of addrs || []) if (a.family === 'IPv4' && !a.internal) return a.address;
+  }
+  return null;
+}
+function suggestedName() {
+  const git = have('git'); if (!git) return null;
+  const r = spawnSync(git, ['config', '--global', 'user.name'], { encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  const name = (r.stdout || '').trim();
+  return name.split(/\s+/).filter(Boolean).length >= 2 ? name : null;
+}
+// "owner-only" is verified, not assumed: the HOME dir must be 0700 and any
+// signature/config that exist must be 0600, or the answer is "unverified".
+function protectionStatus() {
+  if (!fs.existsSync(HOME)) return 'owner-only'; // not created yet: ensureHome() makes it 0700 with 0600 files
+  try {
+    if ((fs.statSync(HOME).mode & 0o777) !== 0o700) return 'unverified';
+    const { SIG, CFG } = f();
+    for (const p of [SIG, CFG]) if (fs.existsSync(p) && (fs.statSync(p).mode & 0o777) !== 0o600) return 'unverified';
+    return 'owner-only';
+  } catch { return 'unverified'; }
+}
 
 function parseArgs(argv) {
   const pos = []; const flags = {}; let onlyPos = false;
@@ -922,7 +1002,9 @@ async function cmdFill(pos, flags) {
   draftGuard(draftMarkers(pages), flags, 'fill');
   const slots = [...textFieldSlots(doc, pdfLib, meta), ...fieldSlots(pages, meta.map(m => m.rot))];
   if (!slots.length) die(3, 'no labeled blank ("Printed Name: ____") and no text field found; render the page and check the layout');
+  const cfg = readConfig();
   const near = flags.near !== undefined ? String(flags.near) : null;
+  let nearUsed = null;
   const describeF = (list) => list.map(s => `  p${s.page} x=${s.x.toFixed(0)} y=${s.yMinTop.toFixed(0)}pt ${s.source}  "${s.line.slice(0, 70)}"${inked(s) || s.existing ? '  (already filled)' : ''}`).join('\n');
   const plan = []; const problems = [];
   for (const { label, value } of sets) {
@@ -936,6 +1018,13 @@ async function cmdFill(pos, flags) {
       // the winner must be clearly under the anchor; two blanks equally far from it stay ambiguous
       if (scored.length > 1 && Number.isFinite(scored[1].d) && scored[1].d - scored[0].d < 40) { problems.push(`--near "${near}" does not separate the ${hits.length} "${label}" blanks (${scored.map(x => Math.round(x.d) + 'pt').join(' vs ')} from it); use a header printed directly above the column`); continue; }
       hits = [scored[0].s];
+    }
+    // No --near given: when the stored company name sits above exactly one
+    // of the ambiguous columns, that is the operator's own side of a
+    // two-party block; use it without asking, and say so in the result.
+    if (hits.length > 1 && !near && cfg.company) {
+      const scored = hits.map(s => ({ s, d: anchorDistance(pages, s, cfg.company) })).filter(x => Number.isFinite(x.d));
+      if (scored.length === 1) { hits = [scored[0].s]; nearUsed = `${cfg.company} (from setup)`; }
     }
     if (hits.length > 1) { problems.push(`"${label}" appears ${hits.length} times; pick the column with --near TEXT (a header printed above it):\n` + describeF(hits)); continue; }
     const s = hits[0];
@@ -967,6 +1056,7 @@ async function cmdFill(pos, flags) {
   }
   fs.writeFileSync(outPath, await doc.save());
   const result = { out: outPath, repaired, filled };
+  if (nearUsed) result.near = nearUsed;
   if (flags.preview) result.preview = preview(outPath, filled[0].page);
   out(result);
 }
@@ -1063,6 +1153,87 @@ async function cmdSeal(pos, flags) {
   if (!ok) process.exit(4);
 }
 
+// The listener is this same script re-invoked with --listen, detached: an
+// http server (node:http) on 127.0.0.1 (or 0.0.0.0 for --phone) serving the
+// drawing page at a random 128-bit token path and accepting exactly one PNG
+// POST before tearing itself down. No dependency beyond the two node: built-ins.
+async function cmdListen(flags) {
+  ensureHome();
+  const minutes = flags.minutes !== undefined ? num(flags.minutes, '--minutes') : 10;
+  const phone = !!flags.phone;
+  let addr = null;
+  if (phone) {
+    addr = phoneAddress();
+    if (!addr) { out({ phone: false, reason: 'no reachable address' }); process.exit(3); }
+  }
+  const bindHost = phone ? '0.0.0.0' : '127.0.0.1';
+  const token = crypto.randomBytes(16).toString('hex');
+  const port = flags.port !== undefined ? num(flags.port, '--port') : 0;
+  const drawHtml = path.join(SKILL_DIR, 'setup', 'draw.html');
+  let finished = false, inflight = false, timer = null;
+  const finish = (patch) => {
+    if (finished) return; finished = true;
+    clearTimeout(timer);
+    const st = readListener() || {};
+    writeListener({ ...st, ...patch });
+    server.close(() => process.exit(0));
+  };
+  const server = http.createServer((req, res) => {
+    const u = (req.url || '').split('?')[0];
+    if (finished) { res.writeHead(410, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'expired' })); return; }
+    if (req.method === 'GET' && u === `/${token}`) {
+      let html; try { html = fs.readFileSync(drawHtml, 'utf8'); } catch { res.writeHead(500); res.end(); return; }
+      html = html.split('__SAVE_URL__').join(`/${token}/save`);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+      return;
+    }
+    if (req.method === 'POST' && u === `/${token}/save`) {
+      if (inflight) { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'busy' })); return; }
+      inflight = true; res.on('finish', () => { if (!finished) inflight = false; });
+      const chunks = []; let bytes = 0, tooBig = false;
+      req.on('data', (c) => {
+        bytes += c.length;
+        if (bytes > 4 * 1024 * 1024) { tooBig = true; req.destroy(); return; }
+        chunks.push(c);
+      });
+      req.on('error', () => {});
+      req.on('end', () => {
+        if (tooBig) { res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'too large' })); return; }
+        let buf = Buffer.concat(chunks);
+        const head = buf.toString('latin1', 0, Math.min(64, buf.length));
+        const m = head.match(/^data:image\/png;base64,/);
+        if (m) buf = Buffer.from(buf.toString('latin1').slice(m[0].length), 'base64');
+        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { inflight = false; res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'too large' })); return; }
+        if (buf.subarray(0, 8).toString('hex') !== PNG_MAGIC) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not a PNG' })); return; }
+        let png; try { png = PNG.sync.read(buf); } catch { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'undecodable PNG' })); return; }
+        if (png.width < 120 || png.height < 40) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'too small' })); return; }
+        let hasInk = false;
+        for (let i = 0; i < png.data.length; i += 4) {
+          const a = png.data[i + 3];
+          if (a > 10 && !(png.data[i] > 245 && png.data[i + 1] > 245 && png.data[i + 2] > 245)) { hasInk = true; break; }
+        }
+        if (!hasInk) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'blank' })); return; }
+        const { SIG, SIG_PREV } = f();
+        if (fs.existsSync(SIG)) fs.copyFileSync(SIG, SIG_PREV);
+        fs.writeFileSync(SIG, buf, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ saved: true }));
+        finish({ saved: true, savedAt: new Date().toISOString() });
+      });
+      return;
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' }));
+  });
+  server.listen(port, bindHost, () => {
+    const actualPort = server.address().port;
+    const url = phone ? `http://${addr}:${actualPort}/${token}` : `http://127.0.0.1:${actualPort}/${token}`;
+    const expiresAt = new Date(Date.now() + minutes * 60000).toISOString();
+    writeListener({ pid: process.pid, port: actualPort, token, bind: bindHost, phone: phone ? addr : null, expiresAt, url });
+    timer = setTimeout(() => finish({ expired: true }), minutes * 60000);
+  });
+}
+
 async function cmdSetup(flags) {
   let migrated = null;
   if (!process.env.SIGN_IT_HOME && HOME === LEGACY_HOME && !fs.existsSync(CANONICAL_HOME)) {
@@ -1070,23 +1241,125 @@ async function cmdSetup(flags) {
   }
   ensureHome();
   const cfg = readConfig();
-  if (typeof flags.name === 'string') { cfg.name = flags.name; writeConfig(cfg); }
-  if (typeof flags['date-format'] === 'string') { cfg.dateFormat = flags['date-format']; writeConfig(cfg); }
+  let cfgChanged = false;
+  for (const [flagName, key] of [['name', 'name'], ['date-format', 'dateFormat'], ['title', 'title'], ['company', 'company'], ['email', 'email']]) {
+    if (typeof flags[flagName] === 'string') { setOrClear(cfg, key, flags[flagName]); cfgChanged = true; }
+  }
+  if (cfgChanged) writeConfig(cfg);
+
   if (flags.from) {
     const src = String(flags.from);
     if (!fs.existsSync(src)) die(1, `no such file: ${src}`);
     const bytes = fs.readFileSync(src);
-    if (bytes.subarray(0, 8).toString('hex') !== PNG_MAGIC) die(1, 'signature must be a PNG, ideally with a transparent background. For a JPG or photo, use setup --draw instead, or remove the white background with any image tool first.');
-    if (!(await decodablePng(bytes, await loadPdfLib()))) die(1, `${src} has a PNG header but does not decode as a PNG; export it again`);
-    fs.writeFileSync(f().SIG, bytes, { mode: 0o600 }); fs.chmodSync(f().SIG, 0o600);
-  }
-  if (flags.draw) {
-    const page = path.join(SKILL_DIR, 'setup', 'draw.html');
-    const opener = (process.env.SIGN_IT_OPENER && have(process.env.SIGN_IT_OPENER)) || have('xdg-open') || have('open');
-    if (opener) spawnSync(opener, [page], { stdio: 'ignore' });
-    out({ draw: page, opened: !!opener, migrated, next: 'draw your signature in the page, click Download, then run: sign-it setup --from <downloaded signature.png>' });
+    const { cleanSignatureImage } = await import('./image-clean.mjs');
+    let result;
+    try { result = await cleanSignatureImage(bytes); }
+    catch (e) {
+      const code = e && e.code;
+      if (code === 'heic') die(3, 'unsupported-photo: that picture is in a format sign-it cannot read (HEIC); use a JPG or PNG, or draw instead');
+      if (code === 'too-small') die(3, 'too-small: that picture is too small or too blank for me to use as a signature; try a closer photo, or draw it instead');
+      if (code === 'too-large') die(3, 'too-large: that picture is too big to process safely; use a smaller copy, or draw it instead');
+      if (code === 'unreadable') die(5, 'unreadable: that picture will not open for me; try a different file, or draw your signature instead');
+      throw e;
+    }
+    const { SIG, SIG_PREV } = f();
+    if (fs.existsSync(SIG)) fs.copyFileSync(SIG, SIG_PREV);
+    fs.writeFileSync(SIG, result.png, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
+    out({ saved: SIG, cleaned: result.cleaned, width: result.width, height: result.height });
     return;
   }
+
+  if (flags.undo) {
+    const { SIG, SIG_PREV } = f();
+    if (!fs.existsSync(SIG_PREV)) die(3, 'nothing to undo');
+    const prevBytes = fs.readFileSync(SIG_PREV);
+    const curBytes = fs.existsSync(SIG) ? fs.readFileSync(SIG) : null;
+    fs.writeFileSync(SIG, prevBytes, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
+    if (curBytes) { fs.writeFileSync(SIG_PREV, curBytes, { mode: 0o600 }); fs.chmodSync(SIG_PREV, 0o600); }
+    else fs.rmSync(SIG_PREV, { force: true });
+    out({ restored: true });
+    return;
+  }
+
+  if (flags.preview) {
+    requireSignature();
+    if (!have('pdftoppm')) die(4, 'pdftoppm (poppler-utils) is required to render a preview');
+    const pdfLib = await loadPdfLib();
+    const { PDFDocument, StandardFonts, rgb } = pdfLib;
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const prefix = 'Signature: ', label = prefix + '______________________';
+    const y = 700, size = 12;
+    page.drawText(label, { x: 72, y, size, font, color: rgb(0, 0, 0) });
+    const png = await doc.embedPng(fs.readFileSync(f().SIG));
+    const blankX = 72 + font.widthOfTextAtSize(prefix, size);
+    const blankWidth = font.widthOfTextAtSize(label, size) - font.widthOfTextAtSize(prefix, size);
+    let w = Math.min(blankWidth - 8, 170), h = w * (png.height / png.width);
+    const maxH = 26; if (h > maxH) { h = maxH; w = h * (png.width / png.height); }
+    page.drawImage(png, { x: blankX + 4, y: y - h + 3, width: w, height: h });
+    const bytes = await doc.save();
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sign-it-preview-'));
+    try {
+      const tmpPdf = path.join(scratch, 'preview.pdf');
+      fs.writeFileSync(tmpPdf, bytes, { mode: 0o600 });
+      const outBase = f().SAMPLE_PREVIEW.replace(/\.png$/, '');
+      const r = run('pdftoppm', ['-f', '1', '-l', '1', '-r', '110', '-png', '-singlefile', tmpPdf, outBase]);
+      if (r.status !== 0) die(5, `pdftoppm failed: ${r.stderr.trim()}`);
+      fs.chmodSync(outBase + '.png', 0o600);
+      out({ preview: outBase + '.png' });
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+    return;
+  }
+
+  if (flags.cancel) {
+    const st = readListener();
+    if (st && pidAlive(st.pid)) { try { process.kill(st.pid, 'SIGTERM'); } catch {} }
+    fs.rmSync(f().LISTENER, { force: true });
+    out({ cancelled: true });
+    return;
+  }
+
+  if (flags.wait !== undefined) {
+    const seconds = flags.wait === true ? 20 : num(flags.wait, '--wait');
+    if (!readListener()) die(3, 'no drawing listener is running; run setup --draw first');
+    const deadline = Date.now() + seconds * 1000;
+    for (;;) {
+      const st = readListener();
+      if (!st) die(3, 'no drawing listener is running; run setup --draw first');
+      if (st.saved) { out({ saved: true, via: st.phone ? 'phone' : 'draw' }); return; }
+      if (st.expired) { out({ expired: true }); return; }
+      if (Date.now() >= deadline) {
+        const secondsLeft = Math.max(0, Math.round((Date.parse(st.expiresAt) - Date.now()) / 1000));
+        out({ waiting: true, secondsLeft });
+        return;
+      }
+      sleepSync(500);
+    }
+  }
+
+  if (flags.listen) { await cmdListen(flags); return; }
+
+  if (flags.draw) {
+    const minutes = flags.minutes !== undefined ? num(flags.minutes, '--minutes') : 10;
+    const existing = readListener();
+    if (listenerLive(existing) && !!existing.phone === !!flags.phone) { out({ listening: true, url: existing.url, phone: !!existing.phone, expiresAt: existing.expiresAt, opened: false }); return; }
+    if (listenerLive(existing)) { try { process.kill(existing.pid, 'SIGTERM'); } catch {} fs.rmSync(f().LISTENER, { force: true }); } // a local listener does not serve a phone request, or the reverse
+    if (flags.phone && !phoneAddress()) { out({ phone: false, reason: 'no reachable address' }); process.exit(3); }
+    const selfPath = fileURLToPath(import.meta.url);
+    const args = [selfPath, 'setup', '--listen', '--port', '0', '--minutes', String(minutes)];
+    if (flags.phone) args.push('--phone');
+    const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore' });
+    child.unref();
+    const deadline = Date.now() + 3000;
+    let state = null;
+    while (Date.now() < deadline) { state = readListener(); if (state && state.url) break; sleepSync(100); }
+    if (!state || !state.url) die(5, 'the drawing listener did not start within 3 seconds');
+    const opened = flags.phone ? false : openUrl(state.url);
+    out({ listening: true, url: state.url, phone: !!flags.phone, expiresAt: state.expiresAt, opened });
+    return;
+  }
+
   const ready = fs.existsSync(f().SIG);
   out({ home: HOME, migrated, signature: ready ? f().SIG : null, config: cfg, ready });
   if (!ready) process.exit(2);
@@ -1126,9 +1399,16 @@ function cmdSealSetup() {
 async function cmdDoctor() {
   let pdfLib = false; try { await import('pdf-lib'); pdfLib = true; } catch {}
   const { SIG, CERT } = f();
+  const cfg = readConfig();
   const r = { skillDir: SKILL_DIR, home: HOME, legacyHome: HOME === LEGACY_HOME ? `using the pre-rename ${LEGACY_HOME}; run \`sign-it setup\` once to move it to ${CANONICAL_HOME}` : null,
-    signature: fs.existsSync(SIG), config: readConfig(), pdfLib, node: process.version,
+    signature: fs.existsSync(SIG), config: cfg, pdfLib, node: process.version,
     pdftotext: !!have('pdftotext'), pdftoppm: !!have('pdftoppm'), tesseract: !!tesseractBin(), pdfsig: !!have('pdfsig'), wordConverter: converterKind(), pyhanko: !!pyhanko(), cert: fs.existsSync(CERT) };
+  r.missing = ['signature', 'name', 'title', 'company', 'email'].filter(k => k === 'signature' ? !r.signature : !cfg[k]);
+  r.platform = platformName();
+  r.suggestedName = suggestedName();
+  r.protection = protectionStatus();
+  const ls = readListener();
+  r.listener = ls ? { active: listenerLive(ls), phone: !!ls.phone, expiresAt: ls.expiresAt, saved: !!ls.saved, expired: !!ls.expired } : null; // never the token or the url
   r.ready = r.signature && r.pdfLib && r.pdftotext;
   out(r);
   if (!r.ready) process.exit(r.signature ? 4 : 2);
