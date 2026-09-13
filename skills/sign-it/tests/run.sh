@@ -27,10 +27,13 @@ check "no-signature refuses (exit 2)" "[ $rc -eq 2 ]"
 check "no-signature writes nothing" "[ ! -e $T/neg1.pdf ]"
 check "no-signature names the setup step" "grep -q 'setup --draw' $T/neg1.err"
 
-# planted negative 2: a PNG header on garbage is rejected at setup (exit 1)
+# planted negative 2: a PNG header on garbage is rejected at setup. The onboarding
+# contract routes every --from input through image-clean.mjs's cleanSignatureImage,
+# whose unified error taxonomy maps an undecodable image to 'unreadable' -> exit 5
+# (was exit 1 under the old, now-superseded PNG-magic-only check).
 printf '\x89PNG\x0d\x0a\x1a\x0aGARBAGEGARBAGEGARBAGE' > "$T/fake.png"
 $CLI setup --from "$T/fake.png" >/dev/null 2>"$T/fake.err"; rc=$?
-check "setup rejects an undecodable PNG (exit 1)" "[ $rc -eq 1 ] && [ ! -e $SIGN_IT_HOME/signature.png ]"
+check "setup rejects an undecodable PNG (exit 5)" "[ $rc -eq 5 ] && [ ! -e $SIGN_IT_HOME/signature.png ] && grep -q 'unreadable' $T/fake.err"
 
 # setup from the committed test signature
 $CLI setup --from "$HERE/fixture-signature.png" --name "Test Signer" >/dev/null; rc=$?
@@ -443,6 +446,195 @@ check "finalize: without --remove it does nothing and says it never picks marker
 printf 'x' >"$T/legacy.doc"
 $CLI finalize "$T/legacy.doc" --remove "DRAFT" >/dev/null 2>"$T/finalize-doc.err"; rc=$?
 check "finalize: a .doc is refused with the save-as hint (exit 1)" "[ $rc -eq 1 ] && grep -q 'save it as .docx' $T/finalize-doc.err"
+
+
+# ---- onboarding (First run): a separate SIGN_IT_HOME so the state above is undisturbed ----
+HOME2="$T/home2"
+
+# wcheck reads the exact phrase to look for from stdin (a quoted heredoc), sidestepping
+# the check() eval layer: several of these sentences carry both "double quotes" and
+# apostrophes, and a second eval-parse of a literal string containing those characters
+# tokenizes it wrong no matter how the first layer is escaped. Same ok/bad bookkeeping as check().
+wcheck() { local label="$1" phrase; phrase="$(cat)"; if grep -qF -- "$phrase" "$SKILL/SKILL.md"; then ok "$label"; else bad "$label"; fi; }
+
+# drawing listener: serves the canvas, accepts one save, refuses a second, tears down on --cancel
+SIGN_IT_HOME="$HOME2" SIGN_IT_OPENER=/bin/true $CLI setup --draw --minutes 1 >"$T/draw.json"; rc=$?
+check "setup --draw starts a listener (exit 0)" "[ $rc -eq 0 ]"
+DRAW_URL="$(python3 -c "import json;print(json.load(open('$T/draw.json'))['url'])")"
+node "$HERE/draw-client.mjs" "$DRAW_URL" "$HERE/fixture-signature.png" >"$T/draw-client.out" 2>&1; rc=$?
+check "listener page includes the save path" "grep -q '/save' $T/draw-client.out"
+check "listener POST stores the signature" "[ $rc -eq 0 ] && grep -q '{\"saved\":true}' $T/draw-client.out"
+SIGN_IT_HOME="$HOME2" $CLI setup --wait 5 >"$T/draw-wait.json"; rc=$?
+check "setup --wait reports saved after the drawing arrives" "[ $rc -eq 0 ] && grep -q '\"saved\": true' $T/draw-wait.json"
+node "$HERE/draw-client.mjs" "$DRAW_URL" "$HERE/fixture-signature.png" --post-only >"$T/draw-second.out" 2>&1; rc=$?
+check "a second POST to a consumed listener is not 200" "[ $rc -ne 0 ] && ! grep -q '^POST 200$' $T/draw-second.out"
+SIGN_IT_HOME="$HOME2" $CLI setup --cancel >"$T/draw-cancel.json"; rc=$?
+check "setup --cancel tears the listener down" "[ $rc -eq 0 ] && grep -q '\"cancelled\": true' $T/draw-cancel.json"
+SIGN_IT_HOME="$HOME2" SIGN_IT_OPENER=/bin/true $CLI setup --draw --minutes 0.05 >"$T/draw-short.json"; rc=$?
+sleep 5
+SIGN_IT_HOME="$HOME2" $CLI setup --wait 1 >"$T/draw-expired.json"; rc=$?
+check "an expired listener reports expired" "[ $rc -eq 0 ] && grep -q '\"expired\": true' $T/draw-expired.json"
+url_short=$(python3 -c "import json;print(json.load(open('$T/draw-short.json'))['url'])")
+check "the drawing page is gone after expiry" "! curl -fsS --max-time 3 \"$url_short\" >/dev/null 2>&1"
+SIGN_IT_HOME="$HOME2" $CLI setup --cancel >/dev/null 2>&1 || true
+SIGN_IT_HOME="$HOME2" SIGN_IT_OPENER=/bin/true $CLI setup --draw --minutes 1 >"$T/draw-local.json"
+SIGN_IT_HOME="$HOME2" SIGN_IT_PHONE_ADDR=127.0.0.1 $CLI setup --draw --phone --minutes 1 >"$T/draw-phone.json"; rc=$?
+check "a phone request does not reuse a local listener" "[ $rc -eq 0 ] && grep -q '\"phone\": true' $T/draw-phone.json"
+SIGN_IT_HOME="$HOME2" $CLI setup --cancel >/dev/null 2>&1 || true
+SIGN_IT_HOME="$HOME2" $CLI doctor >"$T/doctor-listener.json" 2>/dev/null || true
+check "doctor never prints a listener token or url" "! grep -qE '\"(token|url)\"' $T/doctor-listener.json"
+
+# phone path with no reachable address: refused, not silently offered
+SIGN_IT_HOME="$HOME2" SIGN_IT_PHONE_ADDR= $CLI setup --draw --phone --minutes 1 >"$T/phone.json" 2>"$T/phone.err"; rc=$?
+check "setup --draw --phone with no reachable address refuses (exit 3)" "[ $rc -eq 3 ] && grep -q '\"phone\": false' $T/phone.json"
+
+# --from: a JPG on a white background is cleaned, and the result signs
+node "$HERE/make-jpg.mjs" "$HERE/fixture-signature.png" "$T/sig.jpg"
+SIGN_IT_HOME="$HOME2" $CLI setup --from "$T/sig.jpg" >"$T/from-jpg.json"; rc=$?
+check "setup --from a JPG reports cleaned: true" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/from-jpg.json'));assert d['cleaned'] is True, d\""
+SIGN_IT_HOME="$HOME2" $CLI sign "$T/agreement.pdf" --find "Party A" --out "$T/from-jpg-signed.pdf" >/dev/null; rc=$?
+check "sign works with a signature imported from a JPG" "[ $rc -eq 0 ] && [ -s $T/from-jpg-signed.pdf ]"
+
+# --from: HEIC and too-small images are refused with their plain codes
+node "$HERE/make-badimg.mjs" heic "$T/bad.heic"
+SIGN_IT_HOME="$HOME2" $CLI setup --from "$T/bad.heic" >/dev/null 2>"$T/heic.err"; rc=$?
+check "setup --from a HEIC stub refuses (exit 3, unsupported-photo)" "[ $rc -eq 3 ] && grep -q 'unsupported-photo' $T/heic.err"
+node "$HERE/make-badimg.mjs" tiny "$T/tiny.png"
+SIGN_IT_HOME="$HOME2" $CLI setup --from "$T/tiny.png" >/dev/null 2>"$T/tiny.err"; rc=$?
+check "setup --from a too-small image refuses (exit 3, too-small)" "[ $rc -eq 3 ] && grep -q 'too-small' $T/tiny.err"
+
+# title/company/email stored and reflected by doctor; missing/platform/suggestedName
+SIGN_IT_HOME="$HOME2" $CLI setup --title "Managing Member" --company "Example LLC" --email "jane@example.com" >/dev/null; rc=$?
+check "setup stores title, company, email (exit 0)" "[ $rc -eq 0 ]"
+SIGN_IT_HOME="$HOME2" $CLI doctor >"$T/doctor2.json"; rc=$?
+check "doctor shows the stored title, company, email" "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$T/doctor2.json'));c=d['config'];assert c['title']=='Managing Member' and c['company']=='Example LLC' and c['email']=='jane@example.com', c\""
+check "doctor.missing lists exactly what is absent (name only, here)" "python3 -c \"import json;d=json.load(open('$T/doctor2.json'));assert d['missing']==['name'], d['missing']\""
+check "doctor.platform is one of the supported/unsupported names" "python3 -c \"import json;d=json.load(open('$T/doctor2.json'));assert d['platform'] in ('wsl','macos','linux','windows'), d['platform']\""
+check "doctor.suggestedName is null or a two-or-more-word name" "python3 -c \"import json;d=json.load(open('$T/doctor2.json'));s=d.get('suggestedName');assert s is None or len(s.split())>=2, s\""
+
+# --undo restores the previous signature byte for byte
+SIGN_IT_HOME="$HOME2" $CLI setup --from "$HERE/fixture-signature.png" >/dev/null
+cp "$HOME2/signature.png" "$T/undo-before.png"
+SIGN_IT_HOME="$HOME2" $CLI setup --from "$T/sig.jpg" >/dev/null
+SIGN_IT_HOME="$HOME2" $CLI setup --undo >"$T/undo.json"; rc=$?
+check "setup --undo restores the previous signature byte-identically" "[ $rc -eq 0 ] && grep -q '\"restored\": true' $T/undo.json && cmp -s $T/undo-before.png $HOME2/signature.png"
+
+# --preview writes a rendered sample PNG
+if command -v pdftoppm >/dev/null; then
+  SIGN_IT_HOME="$HOME2" $CLI setup --preview >"$T/preview.json"; rc=$?
+  PREVIEW_PATH="$(python3 -c "import json;print(json.load(open('$T/preview.json'))['preview'])" 2>/dev/null)"
+  check "setup --preview reports and writes a sample PNG" "[ $rc -eq 0 ] && [ -n \"$PREVIEW_PATH\" ] && [ -s \"$PREVIEW_PATH\" ]"
+  check "sample preview file is a PNG" "[ \"\$(head -c 8 \"$PREVIEW_PATH\" | od -An -tx1 | tr -d ' \n')\" = 89504e470d0a1a0a ]"
+else
+  echo "SKIP setup --preview (needs pdftoppm)"
+fi
+
+# Skill wording: SKILL.md quotes the spec's user-facing sentences verbatim
+wcheck "SKILL.md quotes the Step 1 opener verbatim" <<'EOF'
+Before I can sign for you, I need your signature one time. It stays on this computer, in a private folder that only your login can open, and I never draw a signature for you. One more thing: anyone who uses this same login on this computer could sign as you, so use your own login. This takes about a minute.
+EOF
+wcheck "SKILL.md quotes the Step 2 question verbatim" <<'EOF'
+How would you like to give me your signature?
+EOF
+wcheck "SKILL.md quotes Step 2 option 1 verbatim" <<'EOF'
+Draw it now on this computer (Recommended)
+EOF
+wcheck "SKILL.md quotes Step 2 option 2 verbatim" <<'EOF'
+Use a photo or picture I already have
+EOF
+wcheck "SKILL.md quotes Step 2 option 3 verbatim" <<'EOF'
+Draw it on my phone
+EOF
+wcheck "SKILL.md quotes Step 2 option 4 verbatim" <<'EOF'
+Not now
+EOF
+wcheck "SKILL.md quotes the draw-on-computer instruction verbatim" <<'EOF'
+A drawing page just opened. Sign inside the box with your mouse, trackpad or finger, then press Save. I will keep checking here; you don't need to tell me.
+EOF
+wcheck "SKILL.md quotes the opener-did-not-open fallback verbatim" <<'EOF'
+I couldn't open the drawing page myself. Click this link to open it: [link]
+EOF
+wcheck "SKILL.md quotes the Still waiting sentence verbatim" <<'EOF'
+Still waiting for your signature. Say "ready" when you have pressed Save, or say "skip" and I will stop here.
+EOF
+wcheck "SKILL.md quotes the photo-location prompt verbatim" <<'EOF'
+Tell me where the picture is; Downloads is fine, or the name of the file. If your window lets you, you can also drag the file in here.
+EOF
+wcheck "SKILL.md quotes the unreadable-picture sentence verbatim" <<'EOF'
+That picture won't open for me. The quickest fix is to draw your signature instead. Or email the photo to yourself and try the copy you receive; that usually works.
+EOF
+wcheck "SKILL.md quotes the too-small-picture sentence verbatim" <<'EOF'
+That picture is too small for me to use as a signature. Try a closer photo, or draw it instead.
+EOF
+wcheck "SKILL.md quotes the phone link instruction verbatim" <<'EOF'
+Open this on your phone and sign with your finger, then press Save: [link]
+EOF
+wcheck "SKILL.md quotes the phone Wi-Fi safety sentence verbatim" <<'EOF'
+Your phone needs to be on the same Wi-Fi as this computer. The link is long and random, works for ten minutes, and stops working the moment a signature arrives. Anyone on your Wi-Fi who had this link could open it during those ten minutes, so don't share it.
+EOF
+wcheck "SKILL.md quotes the phone-link-expired sentence verbatim" <<'EOF'
+That link timed out. Here is a new one, good for another ten minutes: [link]
+EOF
+wcheck "SKILL.md quotes the phone-unavailable sentence verbatim" <<'EOF'
+Your phone and this computer aren't on a network I can use. Draw it on this computer instead, or use a photo.
+EOF
+wcheck "SKILL.md quotes the Not-now stop sentence verbatim" <<'EOF'
+Okay. Nothing was saved. Say 'sign that' with a document whenever you're ready.
+EOF
+wcheck "SKILL.md quotes the Step 3 question verbatim" <<'EOF'
+Here is how it will look on a document. If this doesn't look like your signature, say Redraw. Keep it, redraw it, or use a different picture?
+EOF
+wcheck "SKILL.md quotes the Step 4 name question verbatim" <<'EOF'
+How should your name print under your signature?
+EOF
+wcheck "SKILL.md quotes the Step 4 title question verbatim" <<'EOF'
+Some forms ask for a title, such as Managing Member or CEO. What is yours? You can skip this.
+EOF
+wcheck "SKILL.md quotes the Step 4 company question verbatim" <<'EOF'
+Your company name as it appears on your contracts? It helps me find your side of a two-party signature block. You can skip this.
+EOF
+wcheck "SKILL.md quotes the Step 4 email question verbatim" <<'EOF'
+An email for forms that ask for one? You can skip this.
+EOF
+wcheck "SKILL.md quotes the Step 4 date-style question verbatim" <<'EOF'
+How should dates look?
+EOF
+wcheck "SKILL.md quotes the receipt's first line verbatim" <<'EOF'
+✅ sign-it is ready.
+EOF
+wcheck "SKILL.md quotes the receipt's closing sentence verbatim" <<'EOF'
+Say "sign that" with a document to sign it, or "change my signature" to change any of this.
+EOF
+wcheck "SKILL.md quotes the change-signature reconfirmation verbatim" <<'EOF'
+This will print your name as Jane Example. Still right?
+EOF
+wcheck "SKILL.md quotes the setup-entry change prompt verbatim" <<'EOF'
+What would you like to change?
+EOF
+wcheck "SKILL.md quotes the phone-cannot-load failure sentence verbatim" <<'EOF'
+Your phone needs to be on the same Wi-Fi as this computer. If it still won't open, draw it on this computer instead.
+EOF
+wcheck "SKILL.md quotes the someone-elses-signature failure sentence verbatim" <<'EOF'
+The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then say 'sign that' there.
+EOF
+wcheck "SKILL.md quotes the native-Windows-unsupported sentence verbatim" <<'EOF'
+sign-it runs on Mac, Linux, or Windows with WSL. On this computer it cannot run yet.
+EOF
+wcheck "SKILL.md quotes the Step 0 helper-install offer verbatim" <<'EOF'
+One-time setup on this computer: I need a small helper program for reading PDFs. I can install it now; your computer may ask for your password, which is expected.
+EOF
+wcheck "SKILL.md quotes the Step 0 cannot-install fallback verbatim" <<'EOF'
+I can't install it from here. This needs a technical helper: send them this line and they will know what to do: "install poppler-utils and qpdf for sign-it". Until then I can't sign on this computer.
+EOF
+
+
+# a config folder that does not exist yet is owner-only (it is created 0700), so a fresh user gets the full privacy sentence
+SIGN_IT_HOME="$T/never-created" $CLI doctor >"$T/doctor-fresh.json" 2>/dev/null || true
+check "doctor: an absent config folder reports protection owner-only" "grep -q '\"protection\": \"owner-only\"' $T/doctor-fresh.json && [ ! -d $T/never-created ]"
+chmod 755 "$T/home2" 2>/dev/null || true
+SIGN_IT_HOME="$T/home2" $CLI doctor >"$T/doctor-loose.json" 2>/dev/null || true
+check "doctor: a config folder with loose modes reports protection unverified" "grep -q '\"protection\": \"unverified\"' $T/doctor-loose.json"
+chmod 700 "$T/home2" 2>/dev/null || true
 
 echo "---- $pass passed, $fail failed  (scratch: $T)"
 [ "$fail" -eq 0 ]

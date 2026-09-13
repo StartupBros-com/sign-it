@@ -7,7 +7,7 @@ Claude Code plugin from the House of Vibe marketplace. Install:
 /plugin install sign-it@hov
 ```
 
-Then, once: `pnpm install --dir <plugin>/skills/sign-it` (or `npm install --prefix <plugin>/skills/sign-it`), install `poppler-utils` and `qpdf` (plus `tesseract-ocr` for scanned PDFs, and LibreOffice or a Windows-side Word for .docx), and run `node <plugin>/skills/sign-it/scripts/sign-it.mjs setup --draw` as described below. The skill docs follow; where they say `scripts/sign-it.mjs`, the plugin path is `<plugin>/skills/sign-it/scripts/sign-it.mjs`.
+Then, once: `pnpm install --dir <plugin>/skills/sign-it` (or `npm install --prefix <plugin>/skills/sign-it`), install `poppler-utils` and `qpdf` (plus `tesseract-ocr` for scanned PDFs, and LibreOffice or a Windows-side Word for .docx), then say "sign that" with a document: the first run walks you through your signature and details in plain words. The skill docs follow; where they say `scripts/sign-it.mjs`, the plugin path is `<plugin>/skills/sign-it/scripts/sign-it.mjs`.
 
 Agent-native PDF signing for Claude Code. You draw your signature once; from then on "sign that" works: the agent finds the signature line, stamps your signature and today's date, renders a preview of the result for you to check, and hands back `<file>-signed.pdf`. Optionally it adds a cryptographic seal so the recipient can verify the file was not altered afterwards.
 
@@ -22,11 +22,16 @@ Three sources, in confidence order, all local: a real AcroForm signature field i
 - As a Claude Code skill: put this directory at `~/.claude/skills/sign-it/` (or install the plugin), then `pnpm install --dir ~/.claude/skills/sign-it` (or `npm install --prefix ~/.claude/skills/sign-it`). Needs Node 18+ and `pdftotext` plus `pdftoppm` from poppler-utils (`apt install poppler-utils`, `brew install poppler`).
 - Optional: `tesseract-ocr` (scanned PDFs; set `SIGN_IT_TESSERACT` to point at a specific binary), `uv` + `openssl` (for the seal), and for Word documents either LibreOffice or, on WSL, Word installed on the Windows side (`convert` drives it through `powershell.exe`). `qpdf` opens owner-password PDFs (government fill-ins that are encrypted with an empty user password) and repairs damaged ones; without it those files are refused.
 
+## First run
+
+You don't run any of the commands below by hand inside Claude Code. Say "sign that" or type `/sign-it` with nothing set up yet, and the agent walks you through it once: "Before I can sign for you, I need your signature one time. It stays on this computer, in a private folder that only your login can open, and I never draw a signature for you." You choose how to give it — draw it on this computer, hand over a photo you already have, or draw it on your phone — see it rendered on a sample line before it's ever used, and answer a few optional questions (title, company, email, how dates should look). You end with a receipt: "✅ sign-it is ready." Then whatever document you started with gets signed, no re-asking. The setup below is the same thing run by hand, from a terminal, without the agent.
+
 ## One-time setup
 
 ```
-node scripts/sign-it.mjs setup --draw          # opens setup/draw.html: draw, click Download
-node scripts/sign-it.mjs setup --from ~/Downloads/signature.png --name "Your Name"
+node scripts/sign-it.mjs setup --draw          # opens the drawing page; pressing Save stores the signature, nothing to download
+node scripts/sign-it.mjs setup --wait 20       # the agent polls this until the drawing arrives (or --draw --phone for a phone link)
+node scripts/sign-it.mjs setup --from ~/Downloads/signature.jpg --name "Your Name"   # or any picture: the background is cut away
 node scripts/sign-it.mjs doctor
 ```
 

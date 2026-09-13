@@ -10,22 +10,32 @@
   .row { display: flex; gap: .75rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
   button { font: inherit; padding: .5rem 1rem; border-radius: 6px; border: 1px solid #888; background: #f6f6f6; cursor: pointer; }
   button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  button:disabled { opacity: .6; cursor: default; }
   small { color: #666; }
 </style>
 </head>
 <body>
 <h1>Draw your signature</h1>
-<p>Sign inside the box the way you sign on paper. The download is a transparent PNG cropped to your strokes. Nothing leaves this page.</p>
+<p>Sign inside the box the way you sign on paper. Your signature is cropped to a transparent PNG. Nothing leaves this page except to sign-it running on this computer.</p>
 <canvas id="c" width="1800" height="520"></canvas>
 <div class="row">
   <label>Pen <input id="w" type="range" min="2" max="10" value="4"></label>
   <button id="clear">Clear</button>
   <button id="undo">Undo</button>
-  <button id="dl" class="primary">Download signature.png</button>
-  <small>Then run: <code>sign-it setup --from ~/Downloads/signature.png</code></small>
+  <button id="dl" class="primary">Save</button>
+  <small id="status">Then run: <code>sign-it setup --from ~/Downloads/signature.png</code></small>
 </div>
 <script>
 const c = document.getElementById('c'), ctx = c.getContext('2d');
+const statusEl = document.getElementById('status');
+const dlBtn = document.getElementById('dl');
+// A page opened straight from disk (file://) has no listener to POST to, so
+// it stays on the old Download-then-import path. Every other case (served
+// by `sign-it setup --listen` at an http:// URL) POSTs the drawing back and
+// never asks the user to find a downloaded file.
+const isFile = location.protocol === 'file:';
+if (isFile) { dlBtn.textContent = 'Download signature.png'; }
+else { statusEl.textContent = ''; }
 const strokes = []; let cur = null;
 function pos(e) { const r = c.getBoundingClientRect(); return { x: (e.clientX - r.left) * c.width / r.width, y: (e.clientY - r.top) * c.height / r.height }; }
 function redraw() {
@@ -39,15 +49,34 @@ const end = () => { cur = null; };
 c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
 document.getElementById('clear').onclick = () => { strokes.length = 0; redraw(); };
 document.getElementById('undo').onclick = () => { strokes.pop(); redraw(); };
-document.getElementById('dl').onclick = () => {
-  if (!strokes.length) { alert('Draw something first.'); return; }
+function croppedDataUrl() {
   const d = ctx.getImageData(0, 0, c.width, c.height).data;
   let minX = c.width, minY = c.height, maxX = 0, maxY = 0;
   for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (d[(y * c.width + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
   const pad = 16, w = maxX - minX + 1 + pad * 2, h = maxY - minY + 1 + pad * 2;
   const o = document.createElement('canvas'); o.width = w; o.height = h;
   o.getContext('2d').drawImage(c, minX - pad, minY - pad, w, h, 0, 0, w, h);
-  const a = document.createElement('a'); a.download = 'signature.png'; a.href = o.toDataURL('image/png'); a.click();
+  return o.toDataURL('image/png');
+}
+dlBtn.onclick = async () => {
+  if (!strokes.length) { alert('Draw something first.'); return; }
+  const dataUrl = croppedDataUrl();
+  if (isFile) {
+    const a = document.createElement('a'); a.download = 'signature.png'; a.href = dataUrl; a.click();
+    return;
+  }
+  dlBtn.disabled = true;
+  statusEl.textContent = 'Saving…';
+  try {
+    const res = await fetch('__SAVE_URL__', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: dataUrl });
+    let ok = res.ok;
+    if (ok) { try { ok = (await res.json()).saved === true; } catch { ok = false; } }
+    if (ok) { statusEl.textContent = 'Saved. You can close this page.'; }
+    else { dlBtn.disabled = false; statusEl.textContent = 'Save failed; try again.'; }
+  } catch (e) {
+    dlBtn.disabled = false;
+    statusEl.textContent = 'Save failed; try again.';
+  }
 };
 </script>
 </body>
