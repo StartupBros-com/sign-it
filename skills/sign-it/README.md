@@ -4,7 +4,7 @@ Agent-native PDF signing for Claude Code. You draw your signature once; from the
 
 It replaces print, sign, scan. It does not send documents to other people for their signature.
 
-It runs only when you type `/sign-it`: no agent signs anything on its own initiative, and the skill adds nothing to a session's context until you call it.
+It runs only when you type `/sign-it`: Claude never starts it on its own, and the skill adds nothing to a session's context until you call it.
 
 ## How it finds the line
 

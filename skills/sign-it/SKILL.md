@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # sign-it
 
-This skill runs only when the operator types `/sign-it`, so signing is always their explicit act. Once it is loaded, "sign that", "the other one too", and "change my title" in the same conversation belong to this flow.
+This skill loads only when the operator types `/sign-it`; Claude never starts it on its own. Once it is loaded, "sign that", "the other one too", and "change my title" in the same conversation belong to this flow.
 
 The operator drew their signature once; you apply it. The CLI is `scripts/sign-it.mjs` under this skill's base directory: use the base directory the harness reports when it loads this skill, never a path copied from prose. Commands print their JSON result on stdout; `doctor`, `setup`, `find` with no candidates, and a failed `seal` do so even on a non-zero exit. Hard failures of `sign` and usage errors print nothing on stdout and a `sign-it: <message>` block on stderr, which lists the candidate lines when the slot is ambiguous. Exit codes: 0 ok, 1 usage, 2 no signature configured, 3 no or ambiguous slot, 4 missing dependency, 5 PDF or file error.
 

@@ -4,7 +4,7 @@ Status: spec, 2026-09-12, revised after three refute-by-default reviews (a non-t
 
 ## Who this is for
 
-A House of Vibe member who is not technical. They run a small business, they sign PDFs by printing and scanning, they installed this plugin because someone told them to, and they have a contract to sign. They type `/sign-it` (the skill is never model-invoked, so signing is always their explicit act). They will not read a README, will not type a flag, and never see a file path unless it is a link to click. Everything below is what the agent says and does on their behalf. Supported platforms this round: macOS, Linux, and Windows through WSL2. Native Windows Claude Code is not supported yet, and `doctor` says so in one sentence.
+A House of Vibe member who is not technical. They run a small business, they sign PDFs by printing and scanning, they installed this plugin because someone told them to, and they have a contract to sign. They type `/sign-it` (Claude never starts the skill on its own). They will not read a README, will not type a flag, and never see a file path unless it is a link to click. Everything below is what the agent says and does on their behalf. Supported platforms this round: macOS, Linux, and Windows through WSL2. Native Windows Claude Code is not supported yet, and `doctor` says so in one sentence.
 
 ## Design rules (from the setups that already work for these users)
 
