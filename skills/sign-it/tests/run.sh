@@ -579,7 +579,7 @@ wcheck "SKILL.md quotes the phone-unavailable sentence verbatim" <<'EOF'
 Your phone and this computer aren't on a network I can use. Draw it on this computer instead, or use a photo.
 EOF
 wcheck "SKILL.md quotes the Not-now stop sentence verbatim" <<'EOF'
-Okay. Nothing was saved. Say 'sign that' with a document whenever you're ready.
+Okay. Nothing was saved. Type /sign-it with a document whenever you're ready.
 EOF
 wcheck "SKILL.md quotes the Step 3 question verbatim" <<'EOF'
 Here is how it will look on a document. If this doesn't look like your signature, say Redraw. Keep it, redraw it, or use a different picture?
@@ -603,7 +603,7 @@ wcheck "SKILL.md quotes the receipt's first line verbatim" <<'EOF'
 ✅ sign-it is ready.
 EOF
 wcheck "SKILL.md quotes the receipt's closing sentence verbatim" <<'EOF'
-Say "sign that" with a document to sign it, or "change my signature" to change any of this.
+Type /sign-it with a document to sign it, or /sign-it setup to change any of this.
 EOF
 wcheck "SKILL.md quotes the change-signature reconfirmation verbatim" <<'EOF'
 This will print your name as Jane Example. Still right?
@@ -615,7 +615,7 @@ wcheck "SKILL.md quotes the phone-cannot-load failure sentence verbatim" <<'EOF'
 Your phone needs to be on the same Wi-Fi as this computer. If it still won't open, draw it on this computer instead.
 EOF
 wcheck "SKILL.md quotes the someone-elses-signature failure sentence verbatim" <<'EOF'
-The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then say 'sign that' there.
+The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then type /sign-it there.
 EOF
 wcheck "SKILL.md quotes the native-Windows-unsupported sentence verbatim" <<'EOF'
 sign-it runs on Mac, Linux, or Windows with WSL. On this computer it cannot run yet.

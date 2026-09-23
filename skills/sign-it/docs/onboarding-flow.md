@@ -4,7 +4,7 @@ Status: spec, 2026-09-12, revised after three refute-by-default reviews (a non-t
 
 ## Who this is for
 
-A House of Vibe member who is not technical. They run a small business, they sign PDFs by printing and scanning, they installed this plugin because someone told them to, and they have a contract to sign. They type `/sign-it` or say "sign that". They will not read a README, will not type a flag, and never see a file path unless it is a link to click. Everything below is what the agent says and does on their behalf. Supported platforms this round: macOS, Linux, and Windows through WSL2. Native Windows Claude Code is not supported yet, and `doctor` says so in one sentence.
+A House of Vibe member who is not technical. They run a small business, they sign PDFs by printing and scanning, they installed this plugin because someone told them to, and they have a contract to sign. They type `/sign-it` (the skill is never model-invoked, so signing is always their explicit act). They will not read a README, will not type a flag, and never see a file path unless it is a link to click. Everything below is what the agent says and does on their behalf. Supported platforms this round: macOS, Linux, and Windows through WSL2. Native Windows Claude Code is not supported yet, and `doctor` says so in one sentence.
 
 ## Design rules (from the setups that already work for these users)
 
@@ -21,10 +21,10 @@ A House of Vibe member who is not technical. They run a small business, they sig
 
 | Situation | What happens |
 |---|---|
-| "sign that" / `/sign-it` and no signature stored | Full flow below, then the original request continues without re-asking anything answered. |
+| `/sign-it` and no signature stored | Full flow below, then the original request continues without re-asking anything answered. |
 | Signature stored, a needed detail missing (a form asks for Title, none stored) | Only that detail is asked, in plain words, then stored. |
 | Everything stored | No questions. Signing starts. |
-| `/sign-it setup`, "change my signature", "update my title" | Shows what is stored, offers the one item asked about, never re-asks the rest. |
+| `/sign-it setup`, or "change my signature" / "update my title" in a `/sign-it` conversation | Shows what is stored, offers the one item asked about, never re-asks the rest. |
 | A helper program is missing (poppler, qpdf, Node modules) | Step 0. |
 | Native Windows without WSL | "sign-it runs on Mac, Linux, or Windows with WSL. On this computer it cannot run yet." Stops. |
 
@@ -55,7 +55,7 @@ Question: **"How would you like to give me your signature?"**
 1. **Draw it now on this computer (Recommended)**: a drawing page opens; sign with your mouse, trackpad or finger and press Save.
 2. **Use a photo or picture I already have**: any picture of your signature on a plain background.
 3. **Draw it on my phone**: I give you a link to open on your phone; sign with your finger.
-4. **Not now**: nothing is stored; say "sign that" any time to pick this up.
+4. **Not now**: nothing is stored; type /sign-it any time to pick this up.
 
 All voice is the user's ("my phone", "I already have"). Each path ends at Step 3.
 
@@ -90,7 +90,7 @@ When the drawing arrives: "A signature just arrived from your phone; here is how
 
 > Your phone and this computer aren't on a network I can use. Draw it on this computer instead, or use a photo.
 
-**Not now.** The agent stops and stores nothing: "Okay. Nothing was saved. Say 'sign that' with a document whenever you're ready."
+**Not now.** The agent stops and stores nothing: "Okay. Nothing was saved. Type /sign-it with a document whenever you're ready."
 
 ### Step 3: proof before first use
 
@@ -122,7 +122,7 @@ One fixed shape, each item on its own line:
 > Email: skipped
 > Dates: September 12, 2026
 > Stored in a private folder that only your login on this computer can open.
-> Say "sign that" with a document to sign it, or "change my signature" to change any of this.
+> Type /sign-it with a document to sign it, or /sign-it setup to change any of this.
 
 Then, if the user started with a document, the agent proceeds to sign it without re-asking anything answered here.
 
@@ -150,7 +150,7 @@ Then, if the user started with a document, the agent proceeds to sign it without
 | Phone can't load the link | "Your phone needs to be on the same Wi-Fi as this computer. If it still won't open, draw it on this computer instead." | Step 2 |
 | Unreadable picture | "That picture won't open for me. The quickest fix is to draw your signature instead. Or email the photo to yourself and try the copy you receive." | Step 2 |
 | Picture too small or blank | "That picture is too small for me to use as a signature. Try a closer photo, or draw it instead." | Step 2 |
-| Someone else's signature is stored here | "The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then say 'sign that' there." | stops |
+| Someone else's signature is stored here | "The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then type /sign-it there." | stops |
 | Helper program cannot be installed | the technical-helper sentence from Step 0 | stops |
 
 ## Privacy and safety, stated to the user once and enforced in the tool
@@ -188,10 +188,10 @@ Exists today: `setup --draw` opens a canvas page that requires a Download step; 
 **Skill wording checks (in the suite):** SKILL.md contains each quoted question and message above verbatim.
 
 **Headless proofs (run by hand at release time, transcripts posted on the PR, as done for the draft flow):**
-6. Fresh config, "sign that" with a document: the reply is the opener plus the Step 2 question; nothing is signed; no path or flag appears.
-7. Everything stored, "sign that": no questions.
+6. Fresh config, `/sign-it` with a document: the reply is the opener plus the Step 2 question; nothing is signed; no path or flag appears.
+7. Everything stored, `/sign-it` with a document: no questions.
 8. Signature stored, no title, a form with a Title line: exactly the title question.
-9. "change my signature": Step 2 only; the previous signature is retained.
+9. `/sign-it change my signature`: Step 2 only; the previous signature is retained.
 
 ## Non-goals for this round
 

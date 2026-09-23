@@ -1,7 +1,7 @@
 {
   "name": "sign-it",
   "version": "0.5.0",
-  "description": "Agent-native PDF signing: say \"sign that\" and get <file>-signed.pdf back. Finds the signature line (form field, text layer, drawn rules and captions, or OCR), stamps your stored signature and the date, fills the Printed Name, Title and Email blanks of the block, previews, never stamps over an existing signature, refuses drafts until the text is declared final and can strip a named draft footer from the Word file, fails closed on ambiguity; first run is a plain-words conversation: draw your signature in the browser or on your phone, or use a photo; converts Word documents, opens owner-password forms; optional PAdES seal.",
+  "description": "Agent-native PDF signing: type /sign-it with a document and get <file>-signed.pdf back. Finds the signature line (form field, text layer, drawn rules and captions, or OCR), stamps your stored signature and the date, fills the Printed Name, Title and Email blanks of the block, previews, never stamps over an existing signature, refuses drafts until the text is declared final and can strip a named draft footer from the Word file, fails closed on ambiguity; first run is a plain-words conversation: draw your signature in the browser or on your phone, or use a photo; converts Word documents, opens owner-password forms; optional PAdES seal.",
   "author": {
     "name": "StartupBros / House of Vibe",
     "url": "https://houseofvibe.ai"
