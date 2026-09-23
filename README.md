@@ -7,7 +7,7 @@ Claude Code plugin from the House of Vibe marketplace. Install:
 /plugin install sign-it@hov
 ```
 
-Then, once: `pnpm install --dir <plugin>/skills/sign-it` (or `npm install --prefix <plugin>/skills/sign-it`), install `poppler-utils` and `qpdf` (plus `tesseract-ocr` for scanned PDFs, and LibreOffice or a Windows-side Word for .docx), then say "sign that" with a document: the first run walks you through your signature and details in plain words. The skill docs follow; where they say `scripts/sign-it.mjs`, the plugin path is `<plugin>/skills/sign-it/scripts/sign-it.mjs`.
+Then, once: `pnpm install --dir <plugin>/skills/sign-it` (or `npm install --prefix <plugin>/skills/sign-it`), install `poppler-utils` and `qpdf` (plus `tesseract-ocr` for scanned PDFs, and LibreOffice or a Windows-side Word for .docx), then type `/sign-it` with a document: the first run walks you through your signature and details in plain words. The skill docs follow; where they say `scripts/sign-it.mjs`, the plugin path is `<plugin>/skills/sign-it/scripts/sign-it.mjs`.
 
 Agent-native PDF signing for Claude Code. You draw your signature once; from then on you type `/sign-it` with a document and the agent finds the signature line, stamps your signature and today's date, renders a preview of the result for you to check, and hands back `<file>-signed.pdf`. Optionally it adds a cryptographic seal so the recipient can verify the file was not altered afterwards.
 
