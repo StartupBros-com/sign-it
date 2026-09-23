@@ -1,8 +1,10 @@
 # sign-it
 
-Agent-native PDF signing for Claude Code. You draw your signature once; from then on "sign that" works: the agent finds the signature line, stamps your signature and today's date, renders a preview of the result for you to check, and hands back `<file>-signed.pdf`. Optionally it adds a cryptographic seal so the recipient can verify the file was not altered afterwards.
+Agent-native PDF signing for Claude Code. You draw your signature once; from then on you type `/sign-it` with a document and the agent finds the signature line, stamps your signature and today's date, renders a preview of the result for you to check, and hands back `<file>-signed.pdf`. Optionally it adds a cryptographic seal so the recipient can verify the file was not altered afterwards.
 
 It replaces print, sign, scan. It does not send documents to other people for their signature.
+
+It runs only when a message starts with `/sign-it` (Claude Code expands a slash command only at the start of a message): Claude never starts it on its own, and the skill adds nothing to a session's context until you call it.
 
 ## How it finds the line
 
@@ -15,7 +17,7 @@ Three sources, in confidence order, all local: a real AcroForm signature field i
 
 ## First run
 
-You don't run any of the commands below by hand inside Claude Code. Say "sign that" or type `/sign-it` with nothing set up yet, and the agent walks you through it once: "Before I can sign for you, I need your signature one time. It stays on this computer, in a private folder that only your login can open, and I never draw a signature for you." You choose how to give it — draw it on this computer, hand over a photo you already have, or draw it on your phone — see it rendered on a sample line before it's ever used, and answer a few optional questions (title, company, email, how dates should look). You end with a receipt: "✅ sign-it is ready." Then whatever document you started with gets signed, no re-asking. The setup below is the same thing run by hand, from a terminal, without the agent.
+You don't run any of the commands below by hand inside Claude Code. Type `/sign-it` with nothing set up yet, and the agent walks you through it once: "Before I can sign for you, I need your signature one time. It stays on this computer, in a private folder that only your login can open, and I never draw a signature for you." You choose how to give it — draw it on this computer, hand over a photo you already have, or draw it on your phone — see it rendered on a sample line before it's ever used, and answer a few optional questions (title, company, email, how dates should look). You end with a receipt: "✅ sign-it is ready." Then whatever document you started with gets signed, no re-asking. The setup below is the same thing run by hand, from a terminal, without the agent.
 
 ## One-time setup
 

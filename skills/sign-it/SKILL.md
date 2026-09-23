@@ -1,15 +1,18 @@
 ---
 name: sign-it
-description: Stamps the operator's own saved signature image and today's date onto a PDF's signature line, for "sign this/that/it", "sign as Party A", "sign the NDA/contract", or "put my signature on it", and fills the Printed Name, Title, Email blanks of the signature block; finds the line in form fields, text, drawn rules, or scanned pages, converts Word documents, refuses drafts (DRAFT, Proposed Revision, For Discussion) until the operator says the text is final, renders a preview, and can add a cryptographic seal. Not git or code signing or account sign-in/sign-up, never a counterparty's signature.
+description: Sign a PDF or Word document with your saved signature. Stamps it and today's date on the signature line, fills Printed Name, Title and Email, handles scanned pages, holds drafts until you say the text is final, and can add a cryptographic seal.
+disable-model-invocation: true
 ---
 
 # sign-it
+
+This skill loads only when the operator types `/sign-it`; Claude never starts it on its own. Once it is loaded, "sign that", "the other one too", and "change my title" in the same conversation belong to this flow.
 
 The operator drew their signature once; you apply it. The CLI is `scripts/sign-it.mjs` under this skill's base directory: use the base directory the harness reports when it loads this skill, never a path copied from prose. Commands print their JSON result on stdout; `doctor`, `setup`, `find` with no candidates, and a failed `seal` do so even on a non-zero exit. Hard failures of `sign` and usage errors print nothing on stdout and a `sign-it: <message>` block on stderr, which lists the candidate lines when the slot is ambiguous. Exit codes: 0 ok, 1 usage, 2 no signature configured, 3 no or ambiguous slot, 4 missing dependency, 5 PDF or file error.
 
 ## Hard rules
 
-- Never draw, generate, or fabricate a signature. If none is configured, the only correct move is the one-time setup below, and the answer to "sign that" is "not yet, here is the one step".
+- Never draw, generate, or fabricate a signature. If none is configured, the only correct move is the one-time setup below, and the answer to a signing request is "not yet, here is the one step".
 - Never stamp at a guessed position. The tool refuses when it cannot find a signature field or a labeled blank line; do not work around it with a default coordinate. Measure from a render first.
 - The stored signature belongs to the operator. Do not apply it for anyone else, and do not use this skill to sign as a counterparty.
 - The input file is never overwritten; the output is `<name>-signed.pdf` beside it unless told otherwise.
@@ -36,7 +39,7 @@ The operator drew their signature once; you apply it. The CLI is `scripts/sign-i
 
 Before the opener, read `doctor.protection`: when it is `unverified`, replace "in a private folder that only your login can open" with "in a private folder on this computer" and say nothing more about it; `owner-only` keeps the sentence as written.
 
-This is the script for a non-technical operator who has never used sign-it: they typed `/sign-it` or said "sign that", will not read a README, will not type a flag, and never see a file path unless it is a link to click. Every message and option below is quoted verbatim; reword only to answer a question the operator asked. Supported this round: macOS, Linux, and Windows through WSL2 (native Windows is Step 0/2's platform check above, not this section).
+This is the script for a non-technical operator who has never used sign-it: they typed `/sign-it`, will not read a README, will not type a flag, and never see a file path unless it is a link to click. Every message and option below is quoted verbatim; reword only to answer a question the operator asked. Supported this round: macOS, Linux, and Windows through WSL2 (native Windows is Step 0/2's platform check above, not this section).
 
 Ask through the host's blocking question tool: one question at a time, multiple choice, the recommended option first. If that tool is not available, ask the same question as a numbered list in chat and accept a number or a word back. If nobody answers, stop at the question — never guess, never invent a signature, a title, or an email, never sign as someone else. Map intent loosely ("change my title", "update my job title", "I want a different title" all mean the same thing); never string-match. Nothing here is asked twice on the same login.
 
@@ -44,10 +47,10 @@ Ask through the host's blocking question tool: one question at a time, multiple 
 
 | Situation | What happens |
 |---|---|
-| "sign that" / `/sign-it` and no signature stored | Full flow below, then the original request continues without re-asking anything answered. |
+| `/sign-it` and no signature stored | Full flow below, then the original request continues without re-asking anything answered. |
 | Signature stored, a needed detail missing (a form asks for Title, none stored) | Only that detail is asked, in plain words, then stored. |
 | Everything stored | No questions. Signing starts. |
-| `/sign-it setup`, "change my signature", "update my title" | Shows what is stored, offers the one item asked about, never re-asks the rest. |
+| `/sign-it setup`, or "change my signature" / "update my title" in a `/sign-it` conversation | Shows what is stored, offers the one item asked about, never re-asks the rest. |
 | A helper program is missing (poppler, qpdf, Node modules) | Step 0. |
 | Native Windows without WSL | "sign-it runs on Mac, Linux, or Windows with WSL. On this computer it cannot run yet." Stops. |
 
@@ -70,7 +73,7 @@ That is the only place a technical phrase appears, and it is addressed to the he
 1. **Draw it now on this computer (Recommended)**: a drawing page opens; sign with your mouse, trackpad or finger and press Save.
 2. **Use a photo or picture I already have**: any picture of your signature on a plain background.
 3. **Draw it on my phone**: I give you a link to open on your phone; sign with your finger.
-4. **Not now**: nothing is stored; say "sign that" any time to pick this up.
+4. **Not now**: nothing is stored; type /sign-it any time to pick this up.
 
 *Draw on this computer.* Run `setup --draw`, which starts a detached listener and opens the page through the platform opener (on WSL, the Windows browser via the same PowerShell bridge `convert` uses). Say:
 
@@ -107,7 +110,7 @@ Poll the same way as the on-computer path. When the drawing arrives: "A signatur
 
 > Your phone and this computer aren't on a network I can use. Draw it on this computer instead, or use a photo.
 
-*Not now.* Stop and store nothing: "Okay. Nothing was saved. Say 'sign that' with a document whenever you're ready."
+*Not now.* Stop and store nothing: "Okay. Nothing was saved. Type /sign-it with a document whenever you're ready."
 
 **Step 3: proof before first use.** Run `setup --preview` and show the resulting image:
 
@@ -135,7 +138,7 @@ Store each answer the moment it is given (`setup --name/--title/--company/--emai
 > Email: skipped
 > Dates: September 12, 2026
 > Stored in a private folder that only your login on this computer can open.
-> Say "sign that" with a document to sign it, or "change my signature" to change any of this.
+> Type /sign-it with a document to sign it, or /sign-it setup to change any of this.
 
 "Signature: saved" names the path actually used (drawn on this computer, drawn on your phone, or a photo); a skipped detail reads "skipped", not blank. If the operator started with a document to sign, proceed to sign it now without re-asking anything answered here.
 
@@ -152,7 +155,7 @@ Store each answer the moment it is given (`setup --name/--title/--company/--emai
 | Failure | The agent says | Then |
 |---|---|---|
 | Phone can't load the link | "Your phone needs to be on the same Wi-Fi as this computer. If it still won't open, draw it on this computer instead." | Step 2 |
-| Someone else's signature is stored here | "The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then say 'sign that' there." | stops |
+| Someone else's signature is stored here | "The signature stored here belongs to whoever set this login up. Ask whoever manages this computer for a login of your own, then type /sign-it there." | stops |
 | Helper program cannot be installed | the technical-helper sentence from Step 0 | stops |
 
 **Privacy, stated once, in the opener and the receipt:** the signature and details stay on this computer in a private folder that only this login can open; sign-it never sends them to us or to any server; the phone path moves the drawing only from the operator's phone to this computer over their own network. What the operator later sends (a signed or sealed document) goes wherever they send it; that is theirs, not sign-it's.
