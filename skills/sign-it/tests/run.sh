@@ -8,6 +8,7 @@ SKILL="$(cd "$HERE/.." && pwd)"
 CLI="node $SKILL/scripts/sign-it.mjs"
 T="$(mktemp -d /tmp/sign-it-test.XXXXXX)"
 export SIGN_IT_HOME="$T/home"
+node --test "$HERE/listener-response.test.mjs" || exit 1
 pass=0; fail=0
 ok()   { pass=$((pass+1)); echo "PASS $1"; }
 bad()  { fail=$((fail+1)); echo "FAIL $1"; }
