@@ -669,6 +669,7 @@ async function cmdConvert(pos, flags) {
   if (!/\.(docx?|odt|rtf)$/i.test(src)) die(1, 'convert takes a Word document (.docx, .doc, .odt, .rtf)');
   if (flags.out === true) die(1, '--out needs a file name');
   const outPath = flags.out ? String(flags.out) : src.replace(/\.[^.]+$/, '') + '.pdf';
+  if (sameFile(src, outPath)) die(1, 'refusing to overwrite the input; pass a different --out');
   if (fs.existsSync(outPath) && !flags.force) die(5, `refusing to overwrite ${outPath}; pass --out FILE or --force`);
   const kind = converterKind();
   if (!kind) die(4, 'no Word converter: install LibreOffice (apt install libreoffice-writer-nogui, brew install --cask libreoffice), or on WSL have Word installed on the Windows side (powershell.exe drives it)');
