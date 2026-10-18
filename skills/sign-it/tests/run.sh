@@ -5,6 +5,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL="$(cd "$HERE/.." && pwd)"
+node --test "$HERE/signature-storage.test.mjs" || exit 1
 CLI="node $SKILL/scripts/sign-it.mjs"
 T="$(mktemp -d /tmp/sign-it-test.XXXXXX)"
 export SIGN_IT_HOME="$T/home"

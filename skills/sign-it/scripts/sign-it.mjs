@@ -82,6 +82,11 @@ function readConfig() { try { return JSON.parse(fs.readFileSync(f().CFG, 'utf8')
 function writeConfig(cfg) { ensureHome(); fs.writeFileSync(f().CFG, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 }); }
 function setOrClear(cfg, key, value) { if (value === '') delete cfg[key]; else cfg[key] = value; }
 
+function saveSignature(SIG, SIG_PREV, bytes) {
+  if (fs.existsSync(SIG)) fs.copyFileSync(SIG, SIG_PREV);
+  fs.writeFileSync(SIG, bytes, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
+}
+
 // ---------- onboarding: listener state, opener, platform, phone address ----------
 function readListener() { try { return JSON.parse(fs.readFileSync(f().LISTENER, 'utf8')); } catch { return null; } }
 function writeListener(state) { ensureHome(); fs.writeFileSync(f().LISTENER, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 }); }
@@ -1220,8 +1225,7 @@ async function cmdListen(flags) {
         }
         if (!hasInk) { sendJson(res, 400, { error: 'blank' }); return; }
         const { SIG, SIG_PREV } = f();
-        if (fs.existsSync(SIG)) fs.copyFileSync(SIG, SIG_PREV);
-        fs.writeFileSync(SIG, buf, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
+        saveSignature(SIG, SIG_PREV, buf);
         sendJson(res, 200, { saved: true });
         finish({ saved: true, savedAt: new Date().toISOString() });
       });
@@ -1267,8 +1271,7 @@ async function cmdSetup(flags) {
       throw e;
     }
     const { SIG, SIG_PREV } = f();
-    if (fs.existsSync(SIG)) fs.copyFileSync(SIG, SIG_PREV);
-    fs.writeFileSync(SIG, result.png, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
+    saveSignature(SIG, SIG_PREV, result.png);
     out({ saved: SIG, cleaned: result.cleaned, width: result.width, height: result.height });
     return;
   }
