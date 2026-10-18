@@ -647,6 +647,11 @@ function candidateView(s) {
 }
 function pageMeta(doc) { return doc.getPages().map(p => ({ size: displaySize(p), rot: pageRotation(p) })); }
 
+function shrinkFontSize(font, text, size, availableWidth) {
+  while (size > 6 && font.widthOfTextAtSize(text, size) > availableWidth) size -= 0.5;
+  return size;
+}
+
 // Word documents are converted first; pdf-lib would otherwise fail with an
 // unhelpful parse error.
 function wordDocGuard(p) {
@@ -819,7 +824,7 @@ async function cmdSign(pos, flags) {
       const avail = slot.date.width - 6;
       let size = Math.min(11, Math.max(7, slot.date.boxHeight * 0.55));
       if (font.widthOfTextAtSize(text, size) > avail && (flags.date ?? 'auto') === 'auto') text = fmtDate('auto', cfg, 'iso');
-      while (size > 6 && font.widthOfTextAtSize(text, size) > avail) size -= 0.5;
+      size = shrinkFontSize(font, text, size, avail);
       tf.setFontSize(size); tf.setText(text); tf.enableReadOnly(); tf.updateAppearances(font);
       datePlaced = text;
       }
@@ -1040,14 +1045,14 @@ async function cmdFill(pos, flags) {
     if (s.source === 'acroform' && s.rot === 0) {
       const tf = doc.getForm().getTextField(s.fieldName);
       const maxLen = tf.getMaxLength(); if (maxLen !== undefined && value.length > maxLen) die(5, `field "${s.fieldName}" allows ${maxLen} characters; "${value}" does not fit`);
-      let size = Math.min(11, Math.max(7, s.boxHeight * 0.55)); while (size > 6 && font.widthOfTextAtSize(value, size) > s.width - 6) size -= 0.5;
+      let size = Math.min(11, Math.max(7, s.boxHeight * 0.55)); size = shrinkFontSize(font, value, size, s.width - 6);
       tf.setFontSize(size); tf.setText(value); tf.updateAppearances(font);
       filled.push({ label, value, page: s.page, source: s.source, field: s.fieldName, size });
       continue;
     }
     const page = doc.getPage(s.page - 1); const { width: pw, height: ph } = page.getSize(); const rot = s.rot;
     let size = Math.min(10, Math.max(7, s.lineHeight * 0.75)); const avail = s.width - 4;
-    while (size > 6 && font.widthOfTextAtSize(value, size) > avail) size -= 0.5;
+    size = shrinkFontSize(font, value, size, avail);
     if (font.widthOfTextAtSize(value, size) > avail) die(3, `"${value}" does not fit the ${s.width.toFixed(0)}pt blank for "${label}" even at 6pt; nothing was written`);
     const box = { x: s.x, y: s.y, width: s.width, height: s.lineHeight || size + 4 };
     const cb = displayToContent(rot, pw, ph, box); const t = anchorFor(rot, cb, font.widthOfTextAtSize(value, size), size, { x: 2, y: 2 });
