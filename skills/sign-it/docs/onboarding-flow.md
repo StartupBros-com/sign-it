@@ -1,6 +1,6 @@
 # sign-it first-run onboarding: the user flow
 
-Status: spec, 2026-09-12, revised after three refute-by-default reviews (a non-technical user walkthrough, a privacy and safety review, an executability review against WSL2, macOS and Linux). Drives the next build; nothing here is implemented yet except where marked "exists".
+Status: implemented and shipped as plugin v0.5.0 on 2026-09-13; spec written 2026-09-12 and revised after three refute-by-default reviews (a non-technical user walkthrough, a privacy and safety review, an executability review against WSL2, macOS and Linux). Deviations from the text below as built: `doctor.platform` uses the value `windows` (not `windows-unsupported`); the drawing listener is polled with `setup --wait` rather than blocking; an absent config folder counts as owner-only protection. The four headless acceptance proofs passed on the deployed skill.
 
 ## Who this is for
 
