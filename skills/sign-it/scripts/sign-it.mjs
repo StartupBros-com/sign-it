@@ -674,6 +674,7 @@ async function cmdConvert(pos, flags) {
   if (!/\.(docx?|odt|rtf)$/i.test(src)) die(1, 'convert takes a Word document (.docx, .doc, .odt, .rtf)');
   if (flags.out === true) die(1, '--out needs a file name');
   const outPath = flags.out ? String(flags.out) : src.replace(/\.[^.]+$/, '') + '.pdf';
+  if (sameFile(src, outPath)) die(1, 'refusing to overwrite the input; pass a different --out');
   if (fs.existsSync(outPath) && !flags.force) die(5, `refusing to overwrite ${outPath}; pass --out FILE or --force`);
   const kind = converterKind();
   if (!kind) die(4, 'no Word converter: install LibreOffice (apt install libreoffice-writer-nogui, brew install --cask libreoffice), or on WSL have Word installed on the Windows side (powershell.exe drives it)');
@@ -1162,6 +1163,11 @@ async function cmdSeal(pos, flags) {
 // http server (node:http) on 127.0.0.1 (or 0.0.0.0 for --phone) serving the
 // drawing page at a random 128-bit token path and accepting exactly one PNG
 // POST before tearing itself down. No dependency beyond the two node: built-ins.
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
+
 async function cmdListen(flags) {
   ensureHome();
   const minutes = flags.minutes !== undefined ? num(flags.minutes, '--minutes') : 10;
@@ -1185,7 +1191,7 @@ async function cmdListen(flags) {
   };
   const server = http.createServer((req, res) => {
     const u = (req.url || '').split('?')[0];
-    if (finished) { res.writeHead(410, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'expired' })); return; }
+    if (finished) { sendJson(res, 410, { error: 'expired' }); return; }
     if (req.method === 'GET' && u === `/${token}`) {
       let html; try { html = fs.readFileSync(drawHtml, 'utf8'); } catch { res.writeHead(500); res.end(); return; }
       html = html.split('__SAVE_URL__').join(`/${token}/save`);
@@ -1194,7 +1200,7 @@ async function cmdListen(flags) {
       return;
     }
     if (req.method === 'POST' && u === `/${token}/save`) {
-      if (inflight) { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'busy' })); return; }
+      if (inflight) { sendJson(res, 409, { error: 'busy' }); return; }
       inflight = true; res.on('finish', () => { if (!finished) inflight = false; });
       const chunks = []; let bytes = 0, tooBig = false;
       req.on('data', (c) => {
@@ -1204,31 +1210,30 @@ async function cmdListen(flags) {
       });
       req.on('error', () => {});
       req.on('end', () => {
-        if (tooBig) { res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'too large' })); return; }
+        if (tooBig) { sendJson(res, 413, { error: 'too large' }); return; }
         let buf = Buffer.concat(chunks);
         const head = buf.toString('latin1', 0, Math.min(64, buf.length));
         const m = head.match(/^data:image\/png;base64,/);
         if (m) buf = Buffer.from(buf.toString('latin1').slice(m[0].length), 'base64');
-        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { inflight = false; res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'too large' })); return; }
-        if (buf.subarray(0, 8).toString('hex') !== PNG_MAGIC) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not a PNG' })); return; }
-        let png; try { png = PNG.sync.read(buf); } catch { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'undecodable PNG' })); return; }
-        if (png.width < 120 || png.height < 40) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'too small' })); return; }
+        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { inflight = false; sendJson(res, 413, { error: 'too large' }); return; }
+        if (buf.subarray(0, 8).toString('hex') !== PNG_MAGIC) { sendJson(res, 400, { error: 'not a PNG' }); return; }
+        let png; try { png = PNG.sync.read(buf); } catch { sendJson(res, 400, { error: 'undecodable PNG' }); return; }
+        if (png.width < 120 || png.height < 40) { sendJson(res, 400, { error: 'too small' }); return; }
         let hasInk = false;
         for (let i = 0; i < png.data.length; i += 4) {
           const a = png.data[i + 3];
           if (a > 10 && !(png.data[i] > 245 && png.data[i + 1] > 245 && png.data[i + 2] > 245)) { hasInk = true; break; }
         }
-        if (!hasInk) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'blank' })); return; }
+        if (!hasInk) { sendJson(res, 400, { error: 'blank' }); return; }
         const { SIG, SIG_PREV } = f();
         if (fs.existsSync(SIG)) fs.copyFileSync(SIG, SIG_PREV);
         fs.writeFileSync(SIG, buf, { mode: 0o600 }); fs.chmodSync(SIG, 0o600);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ saved: true }));
+        sendJson(res, 200, { saved: true });
         finish({ saved: true, savedAt: new Date().toISOString() });
       });
       return;
     }
-    res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not found' }));
+    sendJson(res, 404, { error: 'not found' });
   });
   server.listen(port, bindHost, () => {
     const actualPort = server.address().port;
