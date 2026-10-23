@@ -1201,21 +1201,34 @@ async function cmdListen(flags) {
     }
     if (req.method === 'POST' && u === `/${token}/save`) {
       if (inflight) { sendJson(res, 409, { error: 'busy' }); return; }
-      inflight = true; res.on('finish', () => { if (!finished) inflight = false; });
+      inflight = true;
+      let released = false, abandoned = false;
+      const release = () => {
+        if (released) return; released = true;
+        if (!finished) inflight = false;
+      };
+      const abandon = () => { abandoned = true; release(); };
+      // A disconnect need not emit finish. Release once so an old close/error
+      // cannot clear the busy flag belonging to a newer upload.
+      res.once('finish', release);
+      res.once('close', abandon);
+      req.once('aborted', abandon);
       const chunks = []; let bytes = 0, tooBig = false;
       req.on('data', (c) => {
         bytes += c.length;
         if (bytes > 4 * 1024 * 1024) { tooBig = true; req.destroy(); return; }
         chunks.push(c);
       });
-      req.on('error', () => {});
+      req.on('error', abandon);
       req.on('end', () => {
+        if (abandoned) return;
+        if (finished) { sendJson(res, 410, { error: 'expired' }); return; }
         if (tooBig) { sendJson(res, 413, { error: 'too large' }); return; }
         let buf = Buffer.concat(chunks);
         const head = buf.toString('latin1', 0, Math.min(64, buf.length));
         const m = head.match(/^data:image\/png;base64,/);
         if (m) buf = Buffer.from(buf.toString('latin1').slice(m[0].length), 'base64');
-        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { inflight = false; sendJson(res, 413, { error: 'too large' }); return; }
+        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { sendJson(res, 413, { error: 'too large' }); return; }
         if (buf.subarray(0, 8).toString('hex') !== PNG_MAGIC) { sendJson(res, 400, { error: 'not a PNG' }); return; }
         let png; try { png = PNG.sync.read(buf); } catch { sendJson(res, 400, { error: 'undecodable PNG' }); return; }
         if (png.width < 120 || png.height < 40) { sendJson(res, 400, { error: 'too small' }); return; }
@@ -1444,3 +1457,4 @@ try {
   if (e instanceof Exit) { process.stderr.write(`sign-it: ${e.message}\n`); process.exit(e.code); }
   process.stderr.write(`sign-it: ${e && e.message ? e.message : String(e)}\n`); process.exit(5);
 }
+

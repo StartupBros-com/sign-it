@@ -15,6 +15,7 @@ const statements = [...listener.matchAll(/res\.writeHead\(\d+, \{ 'Content-Type'
 const cases = [
   [410, { error: 'expired' }],
   [409, { error: 'busy' }],
+  [410, { error: 'expired' }],
   [413, { error: 'too large' }],
   [413, { error: 'too large' }],
   [400, { error: 'not a PNG' }],
@@ -24,8 +25,8 @@ const cases = [
   [200, { saved: true }],
   [404, { error: 'not found' }],
 ];
-assert.equal(statements.length, cases.length, 'all ten JSON-response sites covered');
-assert.equal((listener.match(/application\/json/g) || []).length + (listener.match(/sendJson\(res,/g) || []).length, 10, 'no response site silently omitted');
+assert.equal(statements.length, cases.length, 'all eleven JSON-response sites covered');
+assert.equal((listener.match(/application\/json/g) || []).length + (listener.match(/sendJson\(res,/g) || []).length, 11, 'no response site silently omitted');
 const stages = ['get writeHead', 'writeHead', 'get end', 'stringify', 'end'];
 for (const [index, [status, payload]] of cases.entries()) {
   for (const failAt of [null, ...stages]) {
