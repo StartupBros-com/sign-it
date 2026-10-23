@@ -48,6 +48,9 @@ const sigWidget = (page, rect, opts = {}) => {
   return ref;
 };
 
+// Shared placement for the standard AcroForm date-field fixtures.
+const addStandardDateWidget = (date, page) => date.addToPage(page, { x: 330, y: 610, width: 130, height: 26 });
+
 if (kind === 'agreement') {
   const p2 = doc.addPage([612, 792]);
   line(p2, 'Signatures', 72, 720, 18, bold);
@@ -104,7 +107,7 @@ if (kind === 'agreement') {
   const p2 = doc.addPage([612, 792]);
   const form = doc.getForm();
   form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
-  const date = form.createTextField('Date1'); date.setMaxLength(10); date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 });
+  const date = form.createTextField('Date1'); date.setMaxLength(10); addStandardDateWidget(date, p2);
 } else if (kind === 'glued') {
   // Word-style row: the underscores are glued to the label, so pdftotext
   // emits "signature_____" and "Date_____" as single words.
@@ -174,7 +177,7 @@ if (kind === 'agreement') {
   const p2 = doc.addPage([612, 792]);
   const form = doc.getForm();
   form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
-  const date = form.createTextField('Date1'); date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 }); date.setText('12/4/18');
+  const date = form.createTextField('Date1'); addStandardDateWidget(date, p2); date.setText('12/4/18');
 } else if (kind === 'footers') {
   // Rows that fire the label rule in the wild but are not signature lines
   // (sweep of 1,676 PDFs, 2026-09-12), plus three real labels among them.
@@ -218,7 +221,7 @@ if (kind === 'agreement') {
   line(p2, 'Signature', 72, 655, 10); line(p2, 'Date', 330, 655, 10);
   const form = doc.getForm();
   form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
-  const date = form.createTextField('Date1'); date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 });
+  const date = form.createTextField('Date1'); addStandardDateWidget(date, p2);
 } else if (kind === 'acro-signed') {
   const p2 = doc.addPage([612, 792]);
   doc.getForm().acroForm.addField(sigWidget(p2, [72, 600, 300, 650], { V: true }));
@@ -237,13 +240,13 @@ if (kind === 'agreement') {
   const form = doc.getForm();
   form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
   const date = form.createTextField('Date1');
-  date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 });
-  date.addToPage(p3, { x: 330, y: 610, width: 130, height: 26 });
+  addStandardDateWidget(date, p2);
+  addStandardDateWidget(date, p3);
 } else if (kind === 'acro-readonly') {
   const p2 = doc.addPage([612, 792]);
   const form = doc.getForm();
   form.acroForm.addField(sigWidget(p2, [72, 600, 300, 650]));
-  const date = form.createTextField('Date1'); date.addToPage(p2, { x: 330, y: 610, width: 130, height: 26 }); date.enableReadOnly();
+  const date = form.createTextField('Date1'); addStandardDateWidget(date, p2); date.enableReadOnly();
 }
 fs.writeFileSync(outPath, await doc.save());
 console.log(outPath);
