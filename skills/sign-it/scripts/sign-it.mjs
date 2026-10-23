@@ -652,6 +652,11 @@ function candidateView(s) {
 }
 function pageMeta(doc) { return doc.getPages().map(p => ({ size: displaySize(p), rot: pageRotation(p) })); }
 
+function shrinkFontSize(font, text, size, availableWidth) {
+  while (size > 6 && font.widthOfTextAtSize(text, size) > availableWidth) size -= 0.5;
+  return size;
+}
+
 // Word documents are converted first; pdf-lib would otherwise fail with an
 // unhelpful parse error.
 function wordDocGuard(p) {
@@ -674,6 +679,7 @@ async function cmdConvert(pos, flags) {
   if (!/\.(docx?|odt|rtf)$/i.test(src)) die(1, 'convert takes a Word document (.docx, .doc, .odt, .rtf)');
   if (flags.out === true) die(1, '--out needs a file name');
   const outPath = flags.out ? String(flags.out) : src.replace(/\.[^.]+$/, '') + '.pdf';
+  if (sameFile(src, outPath)) die(1, 'refusing to overwrite the input; pass a different --out');
   if (fs.existsSync(outPath) && !flags.force) die(5, `refusing to overwrite ${outPath}; pass --out FILE or --force`);
   const kind = converterKind();
   if (!kind) die(4, 'no Word converter: install LibreOffice (apt install libreoffice-writer-nogui, brew install --cask libreoffice), or on WSL have Word installed on the Windows side (powershell.exe drives it)');
@@ -824,7 +830,7 @@ async function cmdSign(pos, flags) {
       const avail = slot.date.width - 6;
       let size = Math.min(11, Math.max(7, slot.date.boxHeight * 0.55));
       if (font.widthOfTextAtSize(text, size) > avail && (flags.date ?? 'auto') === 'auto') text = fmtDate('auto', cfg, 'iso');
-      while (size > 6 && font.widthOfTextAtSize(text, size) > avail) size -= 0.5;
+      size = shrinkFontSize(font, text, size, avail);
       tf.setFontSize(size); tf.setText(text); tf.enableReadOnly(); tf.updateAppearances(font);
       datePlaced = text;
       }
@@ -1045,14 +1051,14 @@ async function cmdFill(pos, flags) {
     if (s.source === 'acroform' && s.rot === 0) {
       const tf = doc.getForm().getTextField(s.fieldName);
       const maxLen = tf.getMaxLength(); if (maxLen !== undefined && value.length > maxLen) die(5, `field "${s.fieldName}" allows ${maxLen} characters; "${value}" does not fit`);
-      let size = Math.min(11, Math.max(7, s.boxHeight * 0.55)); while (size > 6 && font.widthOfTextAtSize(value, size) > s.width - 6) size -= 0.5;
+      let size = Math.min(11, Math.max(7, s.boxHeight * 0.55)); size = shrinkFontSize(font, value, size, s.width - 6);
       tf.setFontSize(size); tf.setText(value); tf.updateAppearances(font);
       filled.push({ label, value, page: s.page, source: s.source, field: s.fieldName, size });
       continue;
     }
     const page = doc.getPage(s.page - 1); const { width: pw, height: ph } = page.getSize(); const rot = s.rot;
     let size = Math.min(10, Math.max(7, s.lineHeight * 0.75)); const avail = s.width - 4;
-    while (size > 6 && font.widthOfTextAtSize(value, size) > avail) size -= 0.5;
+    size = shrinkFontSize(font, value, size, avail);
     if (font.widthOfTextAtSize(value, size) > avail) die(3, `"${value}" does not fit the ${s.width.toFixed(0)}pt blank for "${label}" even at 6pt; nothing was written`);
     const box = { x: s.x, y: s.y, width: s.width, height: s.lineHeight || size + 4 };
     const cb = displayToContent(rot, pw, ph, box); const t = anchorFor(rot, cb, font.widthOfTextAtSize(value, size), size, { x: 2, y: 2 });
@@ -1200,21 +1206,34 @@ async function cmdListen(flags) {
     }
     if (req.method === 'POST' && u === `/${token}/save`) {
       if (inflight) { sendJson(res, 409, { error: 'busy' }); return; }
-      inflight = true; res.on('finish', () => { if (!finished) inflight = false; });
+      inflight = true;
+      let released = false, abandoned = false;
+      const release = () => {
+        if (released) return; released = true;
+        if (!finished) inflight = false;
+      };
+      const abandon = () => { abandoned = true; release(); };
+      // A disconnect need not emit finish. Release once so an old close/error
+      // cannot clear the busy flag belonging to a newer upload.
+      res.once('finish', release);
+      res.once('close', abandon);
+      req.once('aborted', abandon);
       const chunks = []; let bytes = 0, tooBig = false;
       req.on('data', (c) => {
         bytes += c.length;
         if (bytes > 4 * 1024 * 1024) { tooBig = true; req.destroy(); return; }
         chunks.push(c);
       });
-      req.on('error', () => {});
+      req.on('error', abandon);
       req.on('end', () => {
+        if (abandoned) return;
+        if (finished) { sendJson(res, 410, { error: 'expired' }); return; }
         if (tooBig) { sendJson(res, 413, { error: 'too large' }); return; }
         let buf = Buffer.concat(chunks);
         const head = buf.toString('latin1', 0, Math.min(64, buf.length));
         const m = head.match(/^data:image\/png;base64,/);
         if (m) buf = Buffer.from(buf.toString('latin1').slice(m[0].length), 'base64');
-        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { inflight = false; sendJson(res, 413, { error: 'too large' }); return; }
+        if (buf.length >= 24 && buf.toString('latin1', 12, 16) === 'IHDR' && buf.readUInt32BE(16) * buf.readUInt32BE(20) > 40e6) { sendJson(res, 413, { error: 'too large' }); return; }
         if (buf.subarray(0, 8).toString('hex') !== PNG_MAGIC) { sendJson(res, 400, { error: 'not a PNG' }); return; }
         let png; try { png = PNG.sync.read(buf); } catch { sendJson(res, 400, { error: 'undecodable PNG' }); return; }
         if (png.width < 120 || png.height < 40) { sendJson(res, 400, { error: 'too small' }); return; }
@@ -1441,3 +1460,4 @@ try {
   if (e instanceof Exit) { process.stderr.write(`sign-it: ${e.message}\n`); process.exit(e.code); }
   process.stderr.write(`sign-it: ${e && e.message ? e.message : String(e)}\n`); process.exit(5);
 }
+

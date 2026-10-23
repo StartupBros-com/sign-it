@@ -6,6 +6,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL="$(cd "$HERE/.." && pwd)"
 node --test "$HERE/signature-storage.test.mjs" || exit 1
+node --test "$HERE/listener-lifecycle.test.mjs" || exit 1
 CLI="node $SKILL/scripts/sign-it.mjs"
 T="$(mktemp -d /tmp/sign-it-test.XXXXXX)"
 export SIGN_IT_HOME="$T/home"
@@ -14,6 +15,8 @@ pass=0; fail=0
 ok()   { pass=$((pass+1)); echo "PASS $1"; }
 bad()  { fail=$((fail+1)); echo "FAIL $1"; }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+
+node --test "$HERE/font-size.test.mjs" || exit 1
 
 for k in agreement plain ambiguous sameline nodate acroform acro-signed acro-hidden acro-nested acro-shared-date acro-readonly rotated rotated270 ruled draft twocolumn acro-text glued heading footers captions inked columns datafields datafields2 undercap wrapped thinink datebelow acro-prefilled acro-rot270 acro-zero acro-offpage acro-comb ocrlabels; do
   node "$HERE/make-fixture.mjs" "$k" "$T/$k.pdf" >/dev/null || { echo "fixture build failed (is pdf-lib installed? pnpm install --dir $SKILL)"; exit 1; }
@@ -290,6 +293,21 @@ SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_SOFFICE="$T/soffice-stub" $CLI conve
 check "convert via LibreOffice writes <stem>.pdf beside the source" "[ $rc -eq 0 ] && grep -q '\"via\": \"libreoffice\"' $T/conv3.json && [ -s $T/letter.pdf ]"
 SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_SOFFICE="$T/soffice-stub" $CLI convert "$T/letter.docx" >/dev/null 2>"$T/conv4.err"; rc=$?
 check "convert refuses to overwrite an existing PDF (exit 5)" "[ $rc -eq 5 ] && grep -q 'refusing to overwrite' $T/conv4.err"
+
+# --force may replace a distinct output, never the source through any path alias.
+printf 'synthetic Word source: keep unchanged' >"$T/convert-input.orig.docx"
+mkdir -p "$T/convert-alias"
+ln -s "$T/convert-input.docx" "$T/convert-input-link.pdf"
+for target in "$T/convert-input.docx" "$T/convert-alias/../convert-input.docx" "$T/convert-input-link.pdf"; do
+  cp "$T/convert-input.orig.docx" "$T/convert-input.docx"
+  SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_SOFFICE="$T/soffice-stub" $CLI convert "$T/convert-input.docx" --out "$target" --force >"$T/conv-input.json" 2>"$T/conv-input.err"; rc=$?
+  check "convert --force refuses source alias $target (exit 1), preserving input" "[ $rc -eq 1 ] && grep -q 'refusing to overwrite the input' $T/conv-input.err && [ ! -s $T/conv-input.json ] && cmp -s $T/convert-input.orig.docx $T/convert-input.docx"
+done
+cp "$T/convert-input.orig.docx" "$T/convert-input.docx"
+printf 'old output' >"$T/convert-forced.pdf"
+SIGN_IT_STUB_PDF="$T/agreement.pdf" SIGN_IT_SOFFICE="$T/soffice-stub" $CLI convert "$T/convert-input.docx" --out "$T/convert-forced.pdf" --force >"$T/conv-force.json"; rc=$?
+check "convert --force still replaces a distinct output, preserving input" "[ $rc -eq 0 ] && cmp -s $T/agreement.pdf $T/convert-forced.pdf && cmp -s $T/convert-input.orig.docx $T/convert-input.docx"
+
 cat >"$T/powershell-stub" <<'STUB'
 #!/usr/bin/env bash
 # fake powershell.exe: answers $env:TEMP, or copies a PDF to the -Out path
@@ -640,3 +658,4 @@ chmod 700 "$T/home2" 2>/dev/null || true
 
 echo "---- $pass passed, $fail failed  (scratch: $T)"
 [ "$fail" -eq 0 ]
+
